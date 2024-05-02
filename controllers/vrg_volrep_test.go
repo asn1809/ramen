@@ -490,6 +490,78 @@ var _ = Describe("VolumeReplicationGroupVolRepController", func() {
 			vrgTestBoundPV.cleanupUnprotected()
 		})
 	})
+	var vrgUnboundTestCase *vrgTest
+	var pvcDetails types.NamespacedName
+	Context("in primary state", func() {
+		createTestTemplate := &template{
+			ClaimBindInfo:          corev1.ClaimPending,
+			VolumeBindInfo:         corev1.VolumePending,
+			schedulingInterval:     "1h",
+			storageClassName:       "manual",
+			replicationClassName:   "test-replicationclass",
+			vrcProvisioner:         "manual.storage.com",
+			scProvisioner:          "manual.storage.com",
+			replicationClassLabels: map[string]string{"protection": "ramen"},
+		}
+		It("populates the S3 store with PVs and starts vrg as primary", func() {
+			createTestTemplate.s3Profiles = []string{s3Profiles[vrgS3ProfileNumber].S3ProfileName}
+			vrgUnboundTestCase = newVRGTestCaseCreate(2, createTestTemplate, false, false)
+			vrgUnboundTestCase.VRGTestCaseStart()
+		})
+		It("configmap update", func() {
+			ramenConfig.VolumeUnprotectionEnabled = true
+			vrgController.VolumeUnprotectionEnabledForAsyncVolRep = true
+			configMapUpdate()
+		})
+
+		It("checks for the protected PVCs status in VRG", func() {
+			// Do the verification of error msg PVC not bound yet
+			vrgUnboundTestCase.verifyPVCNotBoundMessage()
+		})
+
+		It("update vrg with PVC selector to ignore some pvcs", func() {
+			vrg := vrgUnboundTestCase.getVRG()
+			modifiedLS := metav1.LabelSelector{
+				MatchLabels: vrg.Spec.PVCSelector.MatchLabels,
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "ignoreforramenprotection",
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{"true"},
+					},
+				},
+			}
+			vrg.Spec.PVCSelector = modifiedLS
+			vrgUnboundTestCase.updateVRG(vrg)
+			vrgUnboundTestCase.verifyPVCNotBoundMessage()
+		})
+
+		It("add label on one of the PVCs to ignore", func() {
+			vrg := vrgUnboundTestCase.getVRG()
+			protectedPVC := vrg.Status.ProtectedPVCs[0]
+			pvcDetails = types.NamespacedName{Namespace: protectedPVC.Namespace, Name: protectedPVC.Name}
+			pvc := vrgUnboundTestCase.getPVC(pvcDetails)
+			testLogger.Info("ASN", "pvc before labelling ", pvc)
+			labels := pvc.Labels
+			labels["ignoreforramenprotection"] = "true"
+			pvc.Labels = labels
+			vrgUnboundTestCase.updatePVC(pvc)
+			testLogger.Info("ASN", "pvc after labelling ", pvc)
+			//})
+
+			//It("verifies pvc labelled above is not listed in protectedPVCs of VRG", func() {
+			time.Sleep(1 * time.Second)
+			//vrg := vrgUnboundTestCase.getVRG()
+			testLogger.Info("ASN", "protectedPVCs = ", vrg.Status.ProtectedPVCs)
+			Expect(len(vrg.Status.ProtectedPVCs)).To(Equal(1))
+			Expect(vrg.Status.ProtectedPVCs[0].Name).NotTo(Equal(pvcDetails.Name))
+			Expect(vrg.Status.ProtectedPVCs[0].Namespace).NotTo(Equal(pvcDetails.Namespace))
+		})
+
+		// It -- do clean up -- ramenConfig (defer cleanup in 510) -- vrg test case stop/delete
+
+		// make test-vrg-vr and then make test for verification
+	})
 
 	// Test Object store "get" failure for an s3 store, expect ClusterDataReady to remain false
 	var vrgS3StoreGetTestCase *vrgTest
@@ -1502,6 +1574,19 @@ func (v *vrgTest) getPV(pvName string) *corev1.PersistentVolume {
 	return pv
 }
 
+func (v *vrgTest) getPVC(namespacedName types.NamespacedName) *corev1.PersistentVolumeClaim {
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := apiReader.Get(context.TODO(), namespacedName, pvc)
+	Expect(err).NotTo(HaveOccurred(),
+		"failed to get PVC %s", namespacedName.Name)
+	return pvc
+}
+
+func (v *vrgTest) updatePVC(pvc *corev1.PersistentVolumeClaim) {
+	err := k8sClient.Update(context.TODO(), pvc)
+	Expect(err).NotTo(HaveOccurred())
+}
+
 func getPVC(key types.NamespacedName) *corev1.PersistentVolumeClaim {
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := apiReader.Get(context.TODO(), key, pvc)
@@ -1513,6 +1598,11 @@ func getPVC(key types.NamespacedName) *corev1.PersistentVolumeClaim {
 
 func (v *vrgTest) getVRG() *ramendrv1alpha1.VolumeReplicationGroup {
 	return vrgGet(v.vrgNamespacedName())
+}
+
+func (v *vrgTest) updateVRG(vrg *ramendrv1alpha1.VolumeReplicationGroup) {
+	err := k8sClient.Update(context.TODO(), vrg)
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func vrgGet(vrgNamespacedName types.NamespacedName) *ramendrv1alpha1.VolumeReplicationGroup {
@@ -1630,6 +1720,37 @@ func (v *vrgTest) verifyCachedUploadError() {
 		"found multiple non cached codes for PVCs in VRG %s", v.vrgName)
 	Expect(cachedErr).To(BeNumerically("==", v.pvcCount-1),
 		"found mismatched cached code counts for PVCs in VRG %s", v.vrgName)
+}
+
+func (v *vrgTest) verifyPVCNotBoundMessage() {
+	// Verify cluster data protected remains false
+	v.verifyVRGStatusCondition(vrgController.VRGConditionTypeDataReady, false)
+
+	// We verify is exactly one PVC got the expected aws error and rest report the cached error
+	boundErr := 0
+
+	vrg := v.getVRG()
+	testLogger.Info("VRG details", vrg.Name, vrg)
+	for _, protectedPVC := range vrg.Status.ProtectedPVCs {
+		pvcConditionDataReady := meta.FindStatusCondition(
+			protectedPVC.Conditions,
+			vrgController.VRGConditionTypeDataReady)
+
+		Expect(pvcConditionDataReady).NotTo(BeNil(),
+			"vrg to have data ready as false",
+			vrgController.VRGConditionTypeDataReady,
+			protectedPVC.Name, vrg)
+
+		switch strings.Contains(pvcConditionDataReady.Message,
+			"PVC not bound yet") {
+		case true:
+			boundErr++
+		default: // false
+		}
+	}
+
+	Expect(boundErr).To(BeNumerically("==", v.pvcCount),
+		"found VRG %s", v.vrgName)
 }
 
 func (v *vrgTest) clusterDataProtectedWait(status metav1.ConditionStatus,

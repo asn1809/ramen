@@ -40,4 +40,12 @@ spec:
           annotations:
             description: "Workload is not protected for disaster recovery (DRPC: {{ $labels.obj_name }}, Namespace: {{ $labels.obj_namespace }})."
             alert_type: "DisasterRecovery"
+        - alert: WorkloadUnprotected
+          expr: ramen_workload_protection_status == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            description: "Workload is not protected for disaster recovery (DRPC: {{ $labels.obj_name }}, Namespace: {{ $labels.obj_namespace }})."
+            alert_type: "DisasterRecovery"
     
