@@ -1,8 +1,12 @@
 # SPDX-FileCopyrightText: The RamenDR authors
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
+import json
 import logging
 import os
+
+from packaging.version import Version
 
 from . import commands
 
@@ -102,6 +106,159 @@ def cp(profile, src, dst):
 
 def ssh(profile, command):
     _watch("ssh", command, profile=profile)
+
+
+def setup_files():
+    """
+    Set up minikube to work with drenv. Must be called before starting the
+    first cluster.
+
+    To load the configuration you must call load_files() after a cluster is
+    created.
+    """
+    version = _version()
+    logging.debug("[minikube] Using minikube version %s", version)
+    _setup_sysctl(version)
+    _setup_systemd_resolved(version)
+
+
+def load_files(profile):
+    """
+    Load configuration done in setup_files() before the minikube cluster was
+    started.
+
+    Must be called after the cluster is started, before running any addon. Not
+    need when starting a stopped cluster.
+    """
+    _load_sysctl(profile)
+    _load_systemd_resolved(profile)
+
+
+def cleanup_files():
+    """
+    Cleanup files added by setup_files().
+    """
+    _cleanup_file(_systemd_resolved_drenv_conf())
+    _cleanup_file(_sysctl_drenv_conf())
+
+
+def _version():
+    """
+    Get minikube version string ("v1.33.1") and return a package.version.Version
+    instance.
+    """
+    out = _run("version", output="json")
+    info = json.loads(out)
+    return Version(info["minikubeVersion"])
+
+
+def _setup_sysctl(version):
+    """
+    Increase fs.inotify limits to avoid random timeouts when starting kubevirt
+    VM.
+
+    We use the same configuration as OpenShift worker node.
+    See also https://www.suse.com/support/kb/doc/?id=000020048
+    """
+    if version >= Version("v1.33.1"):
+        logging.debug("[minikube] Skipping sysctl configuration")
+        return
+
+    path = _sysctl_drenv_conf()
+    data = """# Added by drenv setup
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 65536
+"""
+    logging.debug("[minikube] Writing drenv sysctl configuration %s", path)
+    _write_file(path, data)
+
+
+def _load_sysctl(profile):
+    if not os.path.exists(_sysctl_drenv_conf()):
+        return
+    logging.debug("[%s] Loading drenv sysctl configuration", profile)
+    ssh(profile, "sudo sysctl -p /etc/sysctl.d/99-drenv.conf")
+
+
+def _sysctl_drenv_conf():
+    return _minikube_file("etc", "sysctl.d", "99-drenv.conf")
+
+
+def _setup_systemd_resolved(version):
+    """
+    Disable DNSSEC in systemd-resolved configuration.
+
+    This is workaround for minikube regression in 1.33.0:
+    https://github.com/kubernetes/minikube/issues/18705
+
+    TODO: Remove when issue is fixed in minikube.
+    """
+    if version >= Version("v1.33.1"):
+        logging.debug("[minikube] Skipping systemd-resolved configuration")
+        return
+
+    path = _systemd_resolved_drenv_conf()
+    data = """# Added by drenv setup
+[Resolve]
+DNSSEC=no
+"""
+    logging.debug("[minikube] Writing drenv systemd-resolved configuration %s", path)
+    _write_file(path, data)
+
+
+def _load_systemd_resolved(profile):
+    if not os.path.exists(_systemd_resolved_drenv_conf()):
+        return
+    logging.debug("[%s] Loading drenv systemd-resolved configuration", profile)
+    ssh(profile, "sudo systemctl restart systemd-resolved.service")
+
+
+def _systemd_resolved_drenv_conf():
+    return _minikube_file("etc", "systemd", "resolved.conf.d", "99-drenv.conf")
+
+
+def _write_file(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(data)
+
+
+def _cleanup_file(path):
+    """
+    Remove path and empty directories up to $MINIKUBE_HOME/.minikube/files/.
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    else:
+        logging.debug("[minikube] Removed file %s", path)
+
+    stop = _minikube_file()
+    while True:
+        path = os.path.dirname(path)
+        if path == stop:
+            return
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            if e.errno != errno.ENOTEMPTY:
+                raise
+            return
+        else:
+            logging.debug("[minikube] Removed empty directory %s", path)
+
+
+def _minikube_file(*names):
+    """
+    Create a path into $MINIKUBE_HOME/.minikube/files/...
+
+    The files are injected into the VM when the VM is created.
+    """
+    base = os.environ.get("MINIKUBE_HOME", os.path.expanduser("~"))
+    return os.path.join(base, ".minikube", "files", *names)
 
 
 def _run(command, *args, profile=None, output=None):

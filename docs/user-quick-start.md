@@ -97,7 +97,7 @@ enough resources:
    sudo dnf install https://storage.googleapis.com/minikube/releases/latest/minikube-latest.x86_64.rpm
    ```
 
-   Tested with version v1.31.
+   Tested with version v1.33.1.
 
 1. Validate the installation
 
@@ -152,7 +152,7 @@ enough resources:
 1. Install the `virtctl` tool.
 
    ```
-   curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/v1.2.0/virtctl-v1.2.0-linux-amd64
+   curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/v1.2.1/virtctl-v1.2.1-linux-amd64
    sudo install virtctl /usr/local/bin
    rm virtctl
    ```

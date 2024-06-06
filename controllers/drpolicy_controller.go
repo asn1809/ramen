@@ -15,9 +15,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -34,6 +36,7 @@ type DRPolicyReconciler struct {
 	Log               logr.Logger
 	Scheme            *runtime.Scheme
 	ObjectStoreGetter ObjectStoreGetter
+	RateLimiter       *workqueue.RateLimiter
 }
 
 // ReasonValidationFailed is set when the DRPolicy could not be validated or is not valid
@@ -52,6 +55,7 @@ const ReasonDRClustersUnavailable = "DRClustersUnavailable"
 // +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups="policy.open-cluster-management.io",resources=placementbindings,verbs=list;watch
 // +kubebuilder:rbac:groups="policy.open-cluster-management.io",resources=policies,verbs=list;watch
 // +kubebuilder:rbac:groups="",namespace=system,resources=secrets,verbs=get;update
@@ -68,7 +72,7 @@ const ReasonDRClustersUnavailable = "DRClustersUnavailable"
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.9.2/pkg/reconcile
 //
-//nolint:cyclop
+//nolint:cyclop,funlen
 func (r *DRPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("DRPolicy", req.NamespacedName.Name, "rid", uuid.New())
 	log.Info("reconcile enter")
@@ -85,6 +89,11 @@ func (r *DRPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	_, ramenConfig, err := ConfigMapGet(ctx, r.APIReader)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("config map get: %w", u.validatedSetFalse("ConfigMapGetFailed", err))
+	}
+
+	if err := util.CreateRamenOpsNamespace(ctx, r.Client, ramenConfig); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create RamenOpsNamespace: %w",
+			u.validatedSetFalse("NamespaceCreateFailed", err))
 	}
 
 	drclusters := &ramen.DRClusterList{}
@@ -399,7 +408,14 @@ func (u *drpolicyUpdater) finalizerRemove() error {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DRPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	controller := ctrl.NewControllerManagedBy(mgr)
+	if r.RateLimiter != nil {
+		controller.WithOptions(ctrlcontroller.Options{
+			RateLimiter: *r.RateLimiter,
+		})
+	}
+
+	return controller.
 		For(&ramen.DRPolicy{}).
 		Watches(
 			&corev1.ConfigMap{},
@@ -474,18 +490,15 @@ func (r *DRPolicyReconciler) drClusterMapFunc(ctx context.Context, drcluster cli
 
 	requests := make([]reconcile.Request, 0)
 
-	for _, drpolicy := range drpolicies.Items {
-		for _, specCluster := range drpolicy.Spec.DRClusters {
-			if specCluster == drcluster.GetName() {
-				add := reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name: drpolicy.GetName(),
-					},
-				}
-				requests = append(requests, add)
-
-				break
+	for idx := range drpolicies.Items {
+		drpolicy := &drpolicies.Items[idx]
+		if util.DrpolicyContainsDrcluster(drpolicy, drcluster.GetName()) {
+			add := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: drpolicy.GetName(),
+				},
 			}
+			requests = append(requests, add)
 		}
 	}
 

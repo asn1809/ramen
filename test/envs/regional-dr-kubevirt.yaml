@@ -21,23 +21,20 @@ templates:
         io.containerd.grpc.v1.cri:
           device_ownership_from_security_context: true
     network: "$network"
-    cni: flannel
     cpus: 4
     memory: "8g"
     extra_disks: 1
     disk_size: "50g"
-    addons:
-      - csi-hostpath-driver
     workers:
       - addons:
           - name: rook-operator
           - name: rook-cluster
           - name: rook-toolbox
           - name: rook-pool
+          - name: cdi
       - addons:
           - name: ocm-cluster
             args: ["$name", "hub"]
-          - name: cdi
           - name: recipe
       - addons:
           - name: csi-addons
@@ -49,7 +46,6 @@ templates:
     driver: "$vm"
     container_runtime: containerd
     network: "$network"
-    cni: flannel
     cpus: 2
     memory: "4g"
     workers:

@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -82,6 +83,7 @@ type DRPlacementControlReconciler struct {
 	eventRecorder       *rmnutil.EventReporter
 	savedInstanceStatus rmn.DRPlacementControlStatus
 	ObjStoreGetter      ObjectStoreGetter
+	RateLimiter         *workqueue.RateLimiter
 }
 
 func ManifestWorkPredicateFunc() predicate.Funcs {
@@ -401,11 +403,7 @@ func DRPCsUsingDRCluster(k8sclient client.Client, log logr.Logger, drcluster *rm
 	for i := range drpolicies.Items {
 		drpolicy := &drpolicies.Items[i]
 
-		for _, clusterName := range drpolicy.Spec.DRClusters {
-			if clusterName != drcluster.GetName() {
-				continue
-			}
-
+		if rmnutil.DrpolicyContainsDrcluster(drpolicy, drcluster.GetName()) {
 			log.Info("Found DRPolicy referencing DRCluster", "drpolicy", drpolicy.GetName())
 
 			drpcs, err := DRPCsUsingDRPolicy(k8sclient, log, drpolicy)
@@ -416,8 +414,6 @@ func DRPCsUsingDRCluster(k8sclient client.Client, log logr.Logger, drcluster *rm
 			for _, drpc := range drpcs {
 				found = append(found, DRPCAndPolicy{drpc: drpc, drPolicy: drpolicy})
 			}
-
-			break
 		}
 	}
 
@@ -475,11 +471,7 @@ func DRPCsFailingOverToCluster(k8sclient client.Client, log logr.Logger, drclust
 	for drpolicyIdx := range drpolicies.Items {
 		drpolicy := &drpolicies.Items[drpolicyIdx]
 
-		for _, specCluster := range drpolicy.Spec.DRClusters {
-			if specCluster != drcluster {
-				continue
-			}
-
+		if rmnutil.DrpolicyContainsDrcluster(drpolicy, drcluster) {
 			drClusters, err := getDRClusters(context.TODO(), k8sclient, drpolicy)
 			if err != nil || len(drClusters) <= 1 {
 				log.Error(err, "Failed to get DRClusters")
@@ -509,8 +501,6 @@ func DRPCsFailingOverToCluster(k8sclient client.Client, log logr.Logger, drclust
 
 				drpcCollections = append(drpcCollections, dprcCollection)
 			}
-
-			break
 		}
 	}
 
@@ -644,8 +634,15 @@ func (r *DRPlacementControlReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 	r.eventRecorder = rmnutil.NewEventReporter(mgr.GetEventRecorderFor("controller_DRPlacementControl"))
 
+	options := ctrlcontroller.Options{
+		MaxConcurrentReconciles: getMaxConcurrentReconciles(ctrl.Log),
+	}
+	if r.RateLimiter != nil {
+		options.RateLimiter = *r.RateLimiter
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		WithOptions(ctrlcontroller.Options{MaxConcurrentReconciles: getMaxConcurrentReconciles(ctrl.Log)}).
+		WithOptions(options).
 		For(&rmn.DRPlacementControl{}).
 		Watches(&ocmworkv1.ManifestWork{}, mwMapFun, builder.WithPredicates(mwPred)).
 		Watches(&viewv1beta1.ManagedClusterView{}, mcvMapFun, builder.WithPredicates(mcvPred)).
@@ -736,7 +733,7 @@ func (r *DRPlacementControlReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err != nil {
 			logger.Info(fmt.Sprintf("Error in deleting DRPC: (%v)", err))
 
-			statusErr := r.setProgressionAndUpdate(ctx, drpc, rmn.ProgressionDeleting)
+			statusErr := r.setDeletionStatusAndUpdate(ctx, drpc)
 			if statusErr != nil {
 				err = fmt.Errorf("drpc deletion failed: %w and status update failed: %w", err, statusErr)
 			}
@@ -808,10 +805,12 @@ func (r *DRPlacementControlReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return r.reconcileDRPCInstance(d, logger)
 }
 
-func (r *DRPlacementControlReconciler) setProgressionAndUpdate(
-	ctx context.Context, drpc *rmn.DRPlacementControl, progressionStatus rmn.ProgressionStatus,
+func (r *DRPlacementControlReconciler) setDeletionStatusAndUpdate(
+	ctx context.Context, drpc *rmn.DRPlacementControl,
 ) error {
-	updated := updateDRPCProgression(drpc, progressionStatus, r.Log)
+	updated := updateDRPCProgression(drpc, rmn.ProgressionDeleting, r.Log)
+	drpc.Status.Phase = rmn.Deleting
+	drpc.Status.ObservedGeneration = drpc.Generation
 
 	if updated {
 		if err := r.Status().Update(ctx, drpc); err != nil {
@@ -835,7 +834,7 @@ func (r *DRPlacementControlReconciler) recordFailure(ctx context.Context, drpc *
 	}
 }
 
-func (r *DRPlacementControlReconciler) setLastSyncTimeMetric(syncMetrics *SyncMetrics,
+func (r *DRPlacementControlReconciler) setLastSyncTimeMetric(syncMetrics *SyncTimeMetrics,
 	t *metav1.Time, log logr.Logger,
 ) {
 	if syncMetrics == nil {
@@ -967,9 +966,12 @@ func (r *DRPlacementControlReconciler) createDRPCInstance(
 		},
 	}
 
+	d.drType = DRTypeAsync
+
 	isMetro, _ := dRPolicySupportsMetro(drPolicy, drClusters)
 	if isMetro {
 		d.volSyncDisabled = true
+		d.drType = DRTypeSync
 
 		log.Info("volsync is set to disabled")
 	}
@@ -980,11 +982,11 @@ func (r *DRPlacementControlReconciler) createDRPCInstance(
 	return d, nil
 }
 
-func (r *DRPlacementControlReconciler) createDRPCMetricsInstance(
+func (r *DRPlacementControlReconciler) createSyncMetricsInstance(
 	drPolicy *rmn.DRPolicy, drpc *rmn.DRPlacementControl,
-) *DRPCMetrics {
-	syncMetricLabels := SyncMetricLabels(drPolicy, drpc)
-	syncMetrics := NewSyncMetrics(syncMetricLabels)
+) *SyncMetrics {
+	syncTimeMetricLabels := SyncTimeMetricLabels(drPolicy, drpc)
+	syncTimeMetrics := NewSyncTimeMetric(syncTimeMetricLabels)
 
 	syncDurationMetricLabels := SyncDurationMetricLabels(drPolicy, drpc)
 	syncDurationMetrics := NewSyncDurationMetric(syncDurationMetricLabels)
@@ -992,14 +994,21 @@ func (r *DRPlacementControlReconciler) createDRPCMetricsInstance(
 	syncDataBytesLabels := SyncDataBytesMetricLabels(drPolicy, drpc)
 	syncDataMetrics := NewSyncDataBytesMetric(syncDataBytesLabels)
 
+	return &SyncMetrics{
+		SyncTimeMetrics:      syncTimeMetrics,
+		SyncDurationMetrics:  syncDurationMetrics,
+		SyncDataBytesMetrics: syncDataMetrics,
+	}
+}
+
+func (r *DRPlacementControlReconciler) createWorkloadProtectionMetricsInstance(
+	drpc *rmn.DRPlacementControl,
+) *WorkloadProtectionMetrics {
 	workloadProtectionLabels := WorkloadProtectionStatusLabels(drpc)
 	workloadProtectionMetrics := NewWorkloadProtectionStatusMetric(workloadProtectionLabels)
 
-	return &DRPCMetrics{
-		SyncMetrics:               syncMetrics,
-		SyncDurationMetrics:       syncDurationMetrics,
-		SyncDataBytesMetrics:      syncDataMetrics,
-		WorkloadProtectionMetrics: workloadProtectionMetrics,
+	return &WorkloadProtectionMetrics{
+		WorkloadProtectionStatus: workloadProtectionMetrics.WorkloadProtectionStatus,
 	}
 }
 
@@ -1175,6 +1184,7 @@ func (r *DRPlacementControlReconciler) processDeletion(ctx context.Context,
 		}
 	}
 
+	updateDRPCProgression(drpc, rmn.ProgressionDeleted, r.Log)
 	// Remove DRPCFinalizer from DRPC.
 	controllerutil.RemoveFinalizer(drpc, DRPCFinalizer)
 
@@ -1260,8 +1270,8 @@ func (r *DRPlacementControlReconciler) finalizeDRPC(ctx context.Context, drpc *r
 	}
 
 	// delete metrics if matching labels are found
-	syncMetricLabels := SyncMetricLabels(drPolicy, drpc)
-	DeleteSyncMetric(syncMetricLabels)
+	syncTimeMetricLabels := SyncTimeMetricLabels(drPolicy, drpc)
+	DeleteSyncTimeMetric(syncTimeMetricLabels)
 
 	syncDurationMetricLabels := SyncDurationMetricLabels(drPolicy, drpc)
 	DeleteSyncDurationMetric(syncDurationMetricLabels)
@@ -1755,8 +1765,8 @@ func (r *DRPlacementControlReconciler) updateDRPCStatus(
 
 	r.updateResourceCondition(drpc, userPlacement)
 
-	// do not set metrics if DRPC is being deleted
-	if !isBeingDeleted(drpc, userPlacement) {
+	// set metrics if DRPC is not being deleted and if finalizer exists
+	if !isBeingDeleted(drpc, userPlacement) && controllerutil.ContainsFinalizer(drpc, DRPCFinalizer) {
 		if err := r.setDRPCMetrics(ctx, drpc, log); err != nil {
 			// log the error but do not return the error
 			log.Info("Failed to set drpc metrics", "errMSg", err)
@@ -1901,7 +1911,10 @@ func (r *DRPlacementControlReconciler) clusterForVRGStatus(
 func (r *DRPlacementControlReconciler) setDRPCMetrics(ctx context.Context,
 	drpc *rmn.DRPlacementControl, log logr.Logger,
 ) error {
-	log.Info("Setting drpc metrics")
+	log.Info("setting WorkloadProtectionMetrics")
+
+	workloadProtectionMetrics := r.createWorkloadProtectionMetricsInstance(drpc)
+	r.setWorkloadProtectionMetric(workloadProtectionMetrics, drpc.Status.Conditions, log)
 
 	drPolicy, err := r.getDRPolicy(ctx, drpc, log)
 	if err != nil {
@@ -1913,19 +1926,20 @@ func (r *DRPlacementControlReconciler) setDRPCMetrics(ctx context.Context,
 		return err
 	}
 
-	// do not set netrics if metro-dr
+	// do not set sync metrics if metro-dr
 	isMetro, _ := dRPolicySupportsMetro(drPolicy, drClusters)
 	if isMetro {
 		return nil
 	}
 
-	drpcMetrics := r.createDRPCMetricsInstance(drPolicy, drpc)
+	log.Info("setting SyncMetrics")
 
-	if drpcMetrics != nil {
-		r.setLastSyncTimeMetric(&drpcMetrics.SyncMetrics, drpc.Status.LastGroupSyncTime, log)
-		r.setLastSyncDurationMetric(&drpcMetrics.SyncDurationMetrics, drpc.Status.LastGroupSyncDuration, log)
-		r.setLastSyncBytesMetric(&drpcMetrics.SyncDataBytesMetrics, drpc.Status.LastGroupSyncBytes, log)
-		r.setWorkloadProtectionMetric(&drpcMetrics.WorkloadProtectionMetrics, drpc.Status.Conditions, log)
+	syncMetrics := r.createSyncMetricsInstance(drPolicy, drpc)
+
+	if syncMetrics != nil {
+		r.setLastSyncTimeMetric(&syncMetrics.SyncTimeMetrics, drpc.Status.LastGroupSyncTime, log)
+		r.setLastSyncDurationMetric(&syncMetrics.SyncDurationMetrics, drpc.Status.LastGroupSyncDuration, log)
+		r.setLastSyncBytesMetric(&syncMetrics.SyncDataBytesMetrics, drpc.Status.LastGroupSyncBytes, log)
 	}
 
 	return nil
@@ -2264,7 +2278,7 @@ func addOrUpdateCondition(conditions *[]metav1.Condition, conditionType string,
 
 // Initial creation of the DRPC status condition. This will also preserve the ordering of conditions in the array
 func ensureDRPCConditionsInited(conditions *[]metav1.Condition, observedGeneration int64, message string) {
-	const DRPCTotalConditions = 2
+	const DRPCTotalConditions = 3
 	if len(*conditions) == DRPCTotalConditions {
 		return
 	}

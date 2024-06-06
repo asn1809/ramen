@@ -27,8 +27,7 @@ environment.
    sudo dnf install https://storage.googleapis.com/minikube/releases/latest/minikube-latest.x86_64.rpm
    ```
 
-   You need `minikube` version supporting the `--extra-disks` option.
-   Tested with version v1.31.2.
+   Tested with version v1.33.1.
 
 1. Install the `kubectl` tool. See
    [Install and Set Up kubectl on Linux](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/)
@@ -61,7 +60,7 @@ environment.
 1. Install the `virtctl` tool
 
    ```
-   curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/v1.2.0/virtctl-v1.2.0-linux-amd64
+   curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/v1.2.1/virtctl-v1.2.1-linux-amd64
    sudo install virtctl /usr/local/bin
    rm virtctl
    ```
@@ -115,6 +114,13 @@ Change directory to the test directory:
 cd test
 ```
 
+To setup up minikube for drenv run once before starting any
+environment:
+
+```
+drenv setup
+```
+
 To start the environment:
 
 ```
@@ -143,17 +149,31 @@ Dumping the file shows how drenv binds templates, expands addons
 arguments, name workers, and applies default values. This can be useful
 to debugging drenv or when writing a new environment file.
 
-Useful options:
+To see all available commands:
 
-- `-v`, `--verbose`: Show verbose logs
-- `-h`, `--help`: Show online help
-- `--name-prefix`: Add prefix to profiles names
+```
+drenv --help
+```
+
+To see help for a command:
+
+```
+drenv start --help
+```
 
 When you are done you can deactivate the virtual environment:
 
 ```
 deactivate
 ```
+
+To clean up minikube changes done by `drenv setup`, run:
+
+```
+drenv cleanup
+```
+
+This should not be needed.
 
 ## The environment file
 
@@ -631,6 +651,7 @@ simpler and faster to work with a minimal environment.
 - `kubevirt.yaml` - for testing kubevirt and cdi addons
 - `minio.yaml` - for testing `minio` deployment
 - `ocm.yaml` - for testing `ocm` deployment
+- `olm.yaml` - for testing `olm` deployment
 - `rook.yaml` - for testing `rook` deployment
 - `submariner.yaml` - for testing `submariner` deployment
 - `velero.yaml` - for testing `velero` deployment

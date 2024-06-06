@@ -13,13 +13,16 @@ profiles:
         io.containerd.grpc.v1.cri:
           device_ownership_from_security_context: true
     network: $network
-    cni: flannel
     cpus: 4
     memory: "8g"
-    addons:
-      - csi-hostpath-driver
+    extra_disks: 1
+    disk_size: "50g"
     workers:
       - addons:
-          - name: kubevirt
-      - addons:
+          - name: rook-operator
+          - name: rook-cluster
+          - name: rook-toolbox
+          - name: rook-pool
           - name: cdi
+      - addons:
+          - name: kubevirt
