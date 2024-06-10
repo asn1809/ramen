@@ -370,8 +370,10 @@ func (v *VRGInstance) kubeObjectsCaptureComplete(
 
 	captureToRecoverFromIdentifierCurrent := *captureToRecoverFromIdentifier
 	*captureToRecoverFromIdentifier = &ramen.KubeObjectsCaptureIdentifier{
-		Number:          captureNumber,
-		StartTime:       startTime,
+		Number:    captureNumber,
+		StartTime: startTime,
+		EndTime:   metav1.Now(),
+		// Actual EndTime is last request's EndTime but it is okay to use the current time
 		StartGeneration: startGeneration,
 	}
 
@@ -452,6 +454,11 @@ func (v *VRGInstance) kubeObjectsRecover(result *ctrl.Result,
 		return nil
 	}
 
+	localS3StoreAccessor, err := v.findS3StoreAccessor(s3StoreProfile)
+	if err != nil {
+		return err
+	}
+
 	vrg := v.instance
 	sourceVrgNamespaceName, sourceVrgName := vrg.Namespace, vrg.Name
 	sourcePathNamePrefix := s3PathNamePrefix(sourceVrgNamespaceName, sourceVrgName)
@@ -473,7 +480,7 @@ func (v *VRGInstance) kubeObjectsRecover(result *ctrl.Result,
 	vrg.Status.KubeObjectProtection.CaptureToRecoverFrom = captureToRecoverFromIdentifier
 	veleroNamespaceName := v.veleroNamespaceName()
 	labels := util.OwnerLabels(vrg)
-	log := v.log.WithValues("number", captureToRecoverFromIdentifier.Number, "profile", s3StoreProfile.S3ProfileName)
+	log := v.log.WithValues("number", captureToRecoverFromIdentifier.Number, "profile", localS3StoreAccessor.S3ProfileName)
 
 	captureRequestsStruct, err := v.reconciler.kubeObjects.ProtectRequestsGet(
 		v.ctx, v.reconciler.APIReader, veleroNamespaceName, labels)
@@ -493,15 +500,23 @@ func (v *VRGInstance) kubeObjectsRecover(result *ctrl.Result,
 
 	return v.kubeObjectsRecoveryStartOrResume(
 		result,
-		s3StoreAccessor{
-			objectStorer,
-			s3StoreProfile,
-		},
+		s3StoreAccessor{objectStorer, localS3StoreAccessor.S3StoreProfile},
 		sourceVrgNamespaceName, sourceVrgName, captureToRecoverFromIdentifier,
 		kubeobjects.RequestsMapKeyedByName(captureRequestsStruct),
 		kubeobjects.RequestsMapKeyedByName(recoverRequestsStruct),
 		veleroNamespaceName, labels, log,
 	)
+}
+
+func (v *VRGInstance) findS3StoreAccessor(s3StoreProfile ramen.S3StoreProfile) (s3StoreAccessor, error) {
+	for _, s3StoreAccessor := range v.s3StoreAccessors {
+		if s3StoreAccessor.S3StoreProfile.S3ProfileName == s3StoreProfile.S3ProfileName {
+			return s3StoreAccessor, nil
+		}
+	}
+
+	return s3StoreAccessor{},
+		fmt.Errorf("s3StoreProfile (%s) not found in s3StoreAccessor list", s3StoreProfile.S3ProfileName)
 }
 
 func (v *VRGInstance) getRecoverOrProtectRequest(
