@@ -55,9 +55,9 @@ var _ = Describe("VolumeReplicationGroupVolRepController", func() {
 	vrgConditionExpect := func(typ string) *metav1.Condition {
 		return conditionExpect(vrg.Status.Conditions, typ)
 	}
-	// vrgProtectPVCConditionExpect := func(pvcIndex int, typ string) *metav1.Condition {
-	// 	return conditionExpect(vrg.Status.ProtectedPVCs[pvcIndex].Conditions, typ)
-	// }
+	vrgProtectPVCConditionExpect := func(pvcIndex int, typ string) *metav1.Condition {
+		return conditionExpect(vrg.Status.ProtectedPVCs[pvcIndex].Conditions, typ)
+	}
 	vrgConditionStatusReasonExpect := func(typ string, status metav1.ConditionStatus, reason string) *metav1.Condition {
 		condition := vrgConditionExpect(typ)
 		conditionStatusReasonExpect(condition, status, reason)
@@ -233,13 +233,16 @@ var _ = Describe("VolumeReplicationGroupVolRepController", func() {
 			vtest := newVRGTestCaseCreate(1, archivedTestTemplate, true, false)
 			//pvList := vtest.generateFakePVs("pv", numPVs)
 			//pvcList := vtest.generateFakePVCs(pvList)
-			vtest.VRGTestCaseStart()
+			//vtest.VRGTestCaseStart()
+			vtest.VRGSyncTestCaseStart()
 			vrg = vtest.getVRG()
-			vrg.Spec.Sync = &ramendrv1alpha1.VRGSyncSpec{}
-			vrg.Spec.Async = nil
-			Expect(k8sClient.Update(context.TODO(), vrg)).To(Succeed())
+			//vrg.Spec.Sync = &ramendrv1alpha1.VRGSyncSpec{}
+			//vrg.Spec.Async = nil
+			//Expect(k8sClient.Update(context.TODO(), vrg)).To(Succeed())
 			var clusterDataProtectedCondition *metav1.Condition
 			vrgNamespacedName = types.NamespacedName{Name: vrg.Name, Namespace: vrg.Namespace}
+			time.Sleep(1 * time.Second)
+
 			Eventually(func() metav1.ConditionStatus {
 				vrg = vtest.getVRG()
 				clusterDataProtectedCondition = vrgConditionExpect("ClusterDataProtected")
@@ -247,8 +250,38 @@ var _ = Describe("VolumeReplicationGroupVolRepController", func() {
 				return clusterDataProtectedCondition.Status
 			}, timeout, interval).Should(Equal(metav1.ConditionTrue))
 
-			testLogger.Info("ASN", "VRG is", vrg)
-			Expect(true).To(BeFalse())
+			protectedPVCs := vrgStatusPvcsGet()
+			protectedPVCCDPCond := vrgProtectPVCConditionExpect(0, "ClusterDataProtected")
+			protectedPVCCDPCond.Status = "False"
+			protectedPVCCDPCond.Reason = "UploadError"
+			protectedPVCCDPCond.Message = "PVC upload error"
+			modifiedConditions := make([]metav1.Condition, 0)
+			for _, condition := range vrg.Status.ProtectedPVCs[0].Conditions {
+				if condition.Type != "ClusterDataProtected" {
+					modifiedConditions = append(modifiedConditions, condition)
+				} else {
+					modifiedConditions = append(modifiedConditions, *protectedPVCCDPCond)
+				}
+			}
+			protectedPVCs[0].Conditions = modifiedConditions
+
+			testLogger.Info("ASN", "VRG before update is", vtest.getVRG())
+			vrg.Status.ProtectedPVCs = protectedPVCs
+
+			err := k8sClient.Status().Update(context.Background(), vrg)
+			Expect(err).To(BeNil())
+
+			time.Sleep(4 * time.Second)
+
+			// protectedPVCCDPCond = vrgProtectPVCConditionExpect(0, "ClusterDataProtected")
+			pvc := &corev1.PersistentVolumeClaim{}
+			apiReader.Get(context.TODO(), types.NamespacedName{Namespace: protectedPVCs[0].Namespace, Name: protectedPVCs[0].Name}, pvc)
+			testLogger.Info("ASN", "PVC associated with VRG", pvc)
+			testLogger.Info("ASN", "VRG after update is", vtest.getVRG())
+
+			protectedPVCCDPCond = vrgProtectPVCConditionExpect(0, "ClusterDataProtected")
+			Expect(protectedPVCCDPCond.Reason).To(Equal("Uploaded"))
+			Expect(protectedPVCCDPCond.Status).To(Equal("True"))
 
 			// Update condition in API server
 			//protectedPVCs := vrgStatusPvcsGet()
@@ -1144,6 +1177,33 @@ func newVRGTestCaseCreate(pvcCount int, testTemplate *template, checkBind, vrgFi
 	return v
 }
 
+func (v *vrgTest) VRGSyncTestCaseStart() {
+	By("Creating namespace " + v.namespace)
+	v.createNamespace()
+	v.createSC(v.template)
+	//v.createVRC(v.template)
+
+	if v.vrgFirst {
+		v.createSyncVRG()
+
+		if !v.skipCreationPVandPVC {
+			v.createPVCandPV(v.template.ClaimBindInfo, v.template.VolumeBindInfo)
+		}
+	} else {
+		if !v.skipCreationPVandPVC {
+			v.createPVCandPV(v.template.ClaimBindInfo, v.template.VolumeBindInfo)
+		}
+
+		v.createSyncVRG()
+	}
+
+	// If checkBind is true, then check whether PVCs and PVs are
+	// bound. Otherwise expect them to not have been bound.
+	if !v.skipCreationPVandPVC {
+		v.verifyPVCBindingToPV(v.checkBind)
+	}
+}
+
 func (v *vrgTest) VRGTestCaseStart() {
 	By("Creating namespace " + v.namespace)
 	v.createNamespace()
@@ -1430,6 +1490,39 @@ func (v *vrgTest) bindPVAndPVC() {
 		Expect(err).To(BeNil(),
 			"failed to update status of PVC %s", v.pvcNames[i])
 	}
+}
+
+func (v *vrgTest) createSyncVRG() {
+	By("creating VRG " + v.vrgName)
+
+	vrg := &ramendrv1alpha1.VolumeReplicationGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: ramendrv1alpha1.GroupVersion.String(),
+			Kind:       "VolumeReplicationGroup",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      v.vrgName,
+			Namespace: v.namespace,
+		},
+		Spec: ramendrv1alpha1.VolumeReplicationGroupSpec{
+			PVCSelector:      metav1.LabelSelector{MatchLabels: v.pvcLabels},
+			ReplicationState: "primary",
+			Sync:             &ramendrv1alpha1.VRGSyncSpec{},
+			VolSync: ramendrv1alpha1.VolSyncSpec{
+				Disabled: !v.template.volsyncEnabled,
+			},
+			S3Profiles: v.template.s3Profiles,
+		},
+	}
+	err := k8sClient.Create(context.TODO(), vrg)
+	expectedErr := errors.NewAlreadyExists(
+		schema.GroupResource{
+			Group:    "ramendr.openshift.io",
+			Resource: "volumereplicationgroups",
+		},
+		v.vrgName)
+	Expect(err).To(SatisfyAny(BeNil(), MatchError(expectedErr)),
+		"failed to create VRG %s in %s", v.vrgName, v.namespace)
 }
 
 func (v *vrgTest) createVRG() {
