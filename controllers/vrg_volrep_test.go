@@ -55,6 +55,9 @@ var _ = Describe("VolumeReplicationGroupVolRepController", func() {
 	vrgConditionExpect := func(typ string) *metav1.Condition {
 		return conditionExpect(vrg.Status.Conditions, typ)
 	}
+	// vrgProtectPVCConditionExpect := func(pvcIndex int, typ string) *metav1.Condition {
+	// 	return conditionExpect(vrg.Status.ProtectedPVCs[pvcIndex].Conditions, typ)
+	// }
 	vrgConditionStatusReasonExpect := func(typ string, status metav1.ConditionStatus, reason string) *metav1.Condition {
 		condition := vrgConditionExpect(typ)
 		conditionStatusReasonExpect(condition, status, reason)
@@ -210,6 +213,69 @@ var _ = Describe("VolumeReplicationGroupVolRepController", func() {
 	})
 	Specify("VRG delete", func() {
 		Expect(k8sClient.Delete(context.TODO(), vrg)).To(Succeed())
+	})
+
+	// Test archived annotation
+	Context("already archived test case", func() {
+		archivedTestTemplate := &template{
+			ClaimBindInfo:          corev1.ClaimBound,
+			VolumeBindInfo:         corev1.VolumeBound,
+			schedulingInterval:     "1h",
+			storageClassName:       "manual",
+			replicationClassName:   "test-replicationclass",
+			vrcProvisioner:         "manual.storage.com",
+			scProvisioner:          "manual.storage.com",
+			replicationClassLabels: map[string]string{"protection": "ramen"},
+		}
+		It("archives the PV/PVC", func() {
+			archivedTestTemplate.s3Profiles = []string{s3Profiles[vrgS3ProfileNumber].S3ProfileName}
+			//numPVs := 3
+			vtest := newVRGTestCaseCreate(1, archivedTestTemplate, true, false)
+			//pvList := vtest.generateFakePVs("pv", numPVs)
+			//pvcList := vtest.generateFakePVCs(pvList)
+			vtest.VRGTestCaseStart()
+			vrg = vtest.getVRG()
+			vrg.Spec.Sync = &ramendrv1alpha1.VRGSyncSpec{}
+			vrg.Spec.Async = nil
+			Expect(k8sClient.Update(context.TODO(), vrg)).To(Succeed())
+			var clusterDataProtectedCondition *metav1.Condition
+			vrgNamespacedName = types.NamespacedName{Name: vrg.Name, Namespace: vrg.Namespace}
+			Eventually(func() metav1.ConditionStatus {
+				vrg = vtest.getVRG()
+				clusterDataProtectedCondition = vrgConditionExpect("ClusterDataProtected")
+
+				return clusterDataProtectedCondition.Status
+			}, timeout, interval).Should(Equal(metav1.ConditionTrue))
+
+			testLogger.Info("ASN", "VRG is", vrg)
+			Expect(true).To(BeFalse())
+
+			// Update condition in API server
+			//protectedPVCs := vrgStatusPvcsGet()
+			// protectedPVCCDPCond := vrgProtectPVCConditionExpect(0, "ClusterDataProtected")
+			// protectedPVCCDPCond.Status = "False"
+			// protectedPVCCDPCond.Reason = "UploadError"
+			// modifiedConditions := make([]metav1.Condition, 0)
+			// for _, condition := range vrg.Status.ProtectedPVCs[0].Conditions {
+			// 	if condition.Type != "ClusterDataProtected" {
+			// 		modifiedConditions = append(modifiedConditions, condition)
+			// 	} else {
+			// 		modifiedConditions = append(modifiedConditions, *protectedPVCCDPCond)
+			// 	}
+			// }
+			// testLogger.Info("ASN", "VRG before update", vtest.getVRG())
+			// vrg.Status.Conditions = modifiedConditions
+			// // Stop the controller
+			// err := k8sClient.Status().Update(context.Background(), vrg)
+			// Expect(err).To(BeNil())
+
+			// time.Sleep(2 * time.Second)
+
+			// protectedPVCCDPCond = vrgProtectPVCConditionExpect(0, "ClusterDataProtected")
+			// testLogger.Info("ASN", "VRG after update", vtest.getVRG())
+			// Expect(protectedPVCCDPCond.Reason).To(Equal("Uploaded"))
+			// Expect(protectedPVCCDPCond.Status).To(Equal("True"))
+		})
 	})
 
 	// Test first restore
