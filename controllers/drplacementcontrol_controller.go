@@ -1873,7 +1873,7 @@ func (r *DRPlacementControlReconciler) updateResourceCondition(
 	}
 
 	if vrg.Status.KubeObjectProtection.CaptureToRecoverFrom != nil {
-		vrg.Status.KubeObjectProtection.CaptureToRecoverFrom.EndTime.DeepCopyInto(drpc.Status.LastKubeObjectProtectionTime)
+		drpc.Status.LastKubeObjectProtectionTime = &vrg.Status.KubeObjectProtection.CaptureToRecoverFrom.EndTime
 	}
 
 	updateDRPCProtectedCondition(drpc, vrg, clusterName)
@@ -2588,7 +2588,10 @@ func (r *DRPlacementControlReconciler) determineDRPCState(
 			break
 		}
 
-		if drpc.Spec.Action != rmn.DRAction(vrg.Spec.Action) &&
+		// Post-HubRecovery, if the retrieved VRG from the surviving cluster is secondary, it wrongly halts
+		// reconciliation for the workload. Only proceed if the retrieved VRG is primary.
+		if vrg.Spec.ReplicationState == rmn.Primary &&
+			drpc.Spec.Action != rmn.DRAction(vrg.Spec.Action) &&
 			dstCluster == clusterName {
 			msg := fmt.Sprintf("Stop - Two different actions for the same cluster - drpcAction:'%s'. vrgAction:'%s'",
 				drpc.Spec.Action, vrg.Spec.Action)
