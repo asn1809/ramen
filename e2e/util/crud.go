@@ -12,7 +12,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ocmv1b1 "open-cluster-management.io/api/cluster/v1beta1"
 	channelv1 "open-cluster-management.io/multicloud-operators-channel/pkg/apis/apps/v1"
+	subscriptionv1 "open-cluster-management.io/multicloud-operators-subscription/pkg/apis/apps/v1"
 )
 
 func CreateNamespace(client client.Client, namespace string) error {
@@ -153,4 +155,73 @@ func AddNamespaceAnnotationForVolSync(client client.Client, namespace string) er
 	objNs.SetAnnotations(annotations)
 
 	return client.Update(context.Background(), objNs)
+}
+
+// Delete all the subscriptions that are associated with channel
+func CleanUpWorkloads() error {
+	channel := GetChannelNamespace() + "/" + GetChannelName()
+	subList := &subscriptionv1.SubscriptionList{}
+	err := Ctx.Hub.CtrlClient.List(context.Background(), subList)
+	if err != nil {
+		return err
+	}
+	for _, sub := range subList.Items {
+		if sub.Spec.Channel == channel {
+			// delete placement
+			pName := sub.Spec.Placement.PlacementRef.Name
+			pNamespace := sub.Namespace
+			err = DeletePlacement(pName, pNamespace)
+			if err != nil {
+				Ctx.Log.Error(err, "error deleting placement")
+				return err
+			}
+			// delete subscription
+			err = DeleteSubscription(sub.Name, sub.Name)
+			if err != nil {
+				Ctx.Log.Error(err, "error deleting subscription")
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func DeletePlacement(name, namespace string) error {
+	placement := &ocmv1b1.Placement{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	err := Ctx.Hub.CtrlClient.Delete(context.Background(), placement)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+
+		Ctx.Log.Info("placement " + name + " not found")
+	}
+	Ctx.Log.Info("placement " + placement.Name + " is deleted")
+	return nil
+}
+
+func DeleteSubscription(name, ns string) error {
+	subscription := &subscriptionv1.Subscription{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+	}
+
+	err := Ctx.Hub.CtrlClient.Delete(context.Background(), subscription)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+
+		Ctx.Log.Info("subscription " + name + " not found")
+	}
+	Ctx.Log.Info("subscription " + subscription.Name + " is deleted")
+	return nil
 }
