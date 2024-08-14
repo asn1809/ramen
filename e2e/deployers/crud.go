@@ -104,26 +104,6 @@ func createPlacement(name, namespace string) error {
 	return nil
 }
 
-func deletePlacement(name, namespace string) error {
-	placement := &ocmv1b1.Placement{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-	}
-
-	err := util.Ctx.Hub.CtrlClient.Delete(context.Background(), placement)
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return err
-		}
-
-		util.Ctx.Log.Info("placement " + name + " not found")
-	}
-
-	return nil
-}
-
 func createSubscription(s Subscription, w workloads.Workload) error {
 	name := GetCombinedName(s, w)
 	namespace := name
@@ -182,25 +162,8 @@ func createSubscription(s Subscription, w workloads.Workload) error {
 
 func deleteSubscription(s Subscription, w workloads.Workload) error {
 	name := GetCombinedName(s, w)
-	namespace := name
 
-	subscription := &subscriptionv1.Subscription{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-	}
-
-	err := util.Ctx.Hub.CtrlClient.Delete(context.Background(), subscription)
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return err
-		}
-
-		util.Ctx.Log.Info("subscription " + name + " not found")
-	}
-
-	return nil
+	return util.DeleteSubscription(name, name)
 }
 
 func GetCombinedName(d Deployer, w workloads.Workload) string {

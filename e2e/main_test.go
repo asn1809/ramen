@@ -68,9 +68,15 @@ func TestSuites(t *testing.T) {
 		t.Run(suite.name, suite.test)
 	}
 
-	t.Cleanup(func() {
-		if err := util.EnsureChannelDeleted(); err != nil {
-			t.Fatalf("failed to ensure channel deleted: %v", err)
-		}
-	})
+	if util.CleanUp {
+		t.Cleanup(func() {
+			if err := util.CleanUpWorkloads(); err != nil {
+				t.Fatalf("failed to delete placement ")
+			}
+			if err := util.EnsureChannelDeleted(); err != nil {
+				t.Fatalf("failed to ensure channel deleted: %v", err)
+			}
+		})
+	}
+
 }
