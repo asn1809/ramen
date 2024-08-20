@@ -162,15 +162,18 @@ func CleanUpWorkloads() error {
 	channel := GetChannelNamespace() + "/" + GetChannelName()
 	subList := &subscriptionv1.SubscriptionList{}
 	err := Ctx.Hub.CtrlClient.List(context.Background(), subList)
+
 	if err != nil {
 		return err
 	}
+
 	for _, sub := range subList.Items {
 		if sub.Spec.Channel == channel {
 			// delete placement
 			pName := sub.Spec.Placement.PlacementRef.Name
 			pNamespace := sub.Namespace
 			err = DeletePlacement(pName, pNamespace)
+
 			if err != nil {
 				Ctx.Log.Error(err, "error deleting placement")
 				return err
@@ -183,6 +186,7 @@ func CleanUpWorkloads() error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -197,12 +201,15 @@ func DeletePlacement(name, namespace string) error {
 	err := Ctx.Hub.CtrlClient.Delete(context.Background(), placement)
 	if err != nil {
 		if !errors.IsNotFound(err) {
+
 			return err
 		}
 
 		Ctx.Log.Info("placement " + name + " not found")
 	}
+
 	Ctx.Log.Info("placement " + placement.Name + " is deleted")
+
 	return nil
 }
 
@@ -217,11 +224,14 @@ func DeleteSubscription(name, ns string) error {
 	err := Ctx.Hub.CtrlClient.Delete(context.Background(), subscription)
 	if err != nil {
 		if !errors.IsNotFound(err) {
+
 			return err
 		}
 
 		Ctx.Log.Info("subscription " + name + " not found")
 	}
+
 	Ctx.Log.Info("subscription " + subscription.Name + " is deleted")
+
 	return nil
 }
