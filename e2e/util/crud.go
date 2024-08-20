@@ -176,12 +176,14 @@ func CleanUpWorkloads() error {
 
 			if err != nil {
 				Ctx.Log.Error(err, "error deleting placement")
+
 				return err
 			}
 			// delete subscription
 			err = DeleteSubscription(sub.Name, sub.Name)
 			if err != nil {
 				Ctx.Log.Error(err, "error deleting subscription")
+
 				return err
 			}
 		}
