@@ -203,7 +203,6 @@ func DeletePlacement(name, namespace string) error {
 	err := Ctx.Hub.CtrlClient.Delete(context.Background(), placement)
 	if err != nil {
 		if !errors.IsNotFound(err) {
-
 			return err
 		}
 
@@ -226,7 +225,6 @@ func DeleteSubscription(name, ns string) error {
 	err := Ctx.Hub.CtrlClient.Delete(context.Background(), subscription)
 	if err != nil {
 		if !errors.IsNotFound(err) {
-
 			return err
 		}
 
