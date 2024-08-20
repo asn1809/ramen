@@ -25,8 +25,10 @@ import (
 	placementrule "open-cluster-management.io/multicloud-operators-subscription/pkg/apis/apps/placementrule/v1"
 )
 
-var ConfigFile string
-var CleanUp bool
+var (
+	ConfigFile string
+	CleanUp    bool
+)
 
 type Cluster struct {
 	K8sClientSet *kubernetes.Clientset

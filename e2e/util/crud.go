@@ -161,8 +161,8 @@ func AddNamespaceAnnotationForVolSync(client client.Client, namespace string) er
 func CleanUpWorkloads() error {
 	channel := GetChannelNamespace() + "/" + GetChannelName()
 	subList := &subscriptionv1.SubscriptionList{}
-	err := Ctx.Hub.CtrlClient.List(context.Background(), subList)
-	if err != nil {
+
+	if err := Ctx.Hub.CtrlClient.List(context.Background(), subList); err != nil {
 		return err
 	}
 
@@ -171,14 +171,14 @@ func CleanUpWorkloads() error {
 			// delete placement
 			pName := sub.Spec.Placement.PlacementRef.Name
 			pNamespace := sub.Namespace
-			err = DeletePlacement(pName, pNamespace)
-			if err != nil {
+
+			if err := DeletePlacement(pName, pNamespace); err != nil {
 				Ctx.Log.Error(err, "error deleting placement")
 
 				return err
 			}
 			// delete subscription
-			err = DeleteSubscription(sub.Name, sub.Name)
+			err := DeleteSubscription(sub.Name, sub.Name)
 			if err != nil {
 				Ctx.Log.Error(err, "error deleting subscription")
 
