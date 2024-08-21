@@ -206,7 +206,6 @@ func DeletePlacement(name, namespace string) error {
 
 		Ctx.Log.Info("placement " + name + " not found")
 	}
-
 	Ctx.Log.Info("placement " + placement.Name + " is deleted")
 
 	return nil
