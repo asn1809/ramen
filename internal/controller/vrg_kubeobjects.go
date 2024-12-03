@@ -643,7 +643,7 @@ func (v *VRGInstance) kubeObjectsRecoveryStartOrResume(
 
 		if rg.IsHook {
 			if err := v.executeHook(rg.Hook, log1); err != nil {
-				break
+				return fmt.Errorf("check hook execution failed during restore %s: %v", rg.Hook.Name, err)
 			}
 		} else {
 			if err := v.executeRecoverGroup(result, s3StoreAccessor, sourceVrgNamespaceName,
@@ -654,10 +654,6 @@ func (v *VRGInstance) kubeObjectsRecoveryStartOrResume(
 			}
 		}
 	}
-
-	startTime := requests[0].StartTime()
-	duration := time.Since(startTime.Time)
-	log.Info("Kube objects recovered", "groups", len(groups), "start", startTime, "duration", duration)
 
 	return v.kubeObjectsRecoverRequestsDelete(result, veleroNamespaceName, labels)
 }
@@ -905,8 +901,8 @@ func getResourceAndConvertToRecoverGroup(
 }
 
 func validateAndGetHookDetails(name string) (string, string, error) {
-	if !strings.Contains(name, "/") {
-		return "", "", errors.New("invalid format of hook name provided ")
+	if strings.Count(name, "/") != 1 {
+		return "", "", errors.New("invalid format: hook name provided should be of the form part1/part2")
 	}
 
 	parts := strings.Split(name, "/")
@@ -956,7 +952,6 @@ func convertRecipeHookToRecoverSpec(hook Recipe.Hook, suffix string) (*kubeobjec
 
 	return &kubeobjects.RecoverSpec{
 		// BackupName: arbitrary fixed string to designate that this is will be a Backup, not Restore, object
-		BackupName: ramen.ReservedBackupName,
 		Spec: kubeobjects.Spec{
 			KubeResourcesSpec: kubeobjects.KubeResourcesSpec{
 				IncludedNamespaces: []string{hook.Namespace},
@@ -1036,8 +1031,14 @@ func getOpHookSpec(hook *Recipe.Hook, suffix string) kubeobjects.HookSpec {
 }
 
 func convertRecipeGroupToRecoverSpec(group Recipe.Group) (*kubeobjects.RecoverSpec, error) {
+	var backupName string
+	if group.BackupRef != "" {
+		backupName = group.BackupRef
+	} else {
+		backupName = group.Name
+	}
 	return &kubeobjects.RecoverSpec{
-		BackupName: group.BackupRef,
+		BackupName: backupName,
 		Spec: kubeobjects.Spec{
 			KubeResourcesSpec: kubeobjects.KubeResourcesSpec{
 				IncludedNamespaces: group.IncludedNamespaces,
