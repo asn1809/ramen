@@ -251,6 +251,8 @@ func (v *VRGInstance) kubeObjectsCaptureStartOrResume(
 		log1 := log.WithValues("group", groupNumber, "name", cg.Name)
 
 		if cg.IsHook {
+			// TODO here instead of v as type, appropriate hook needs to be used
+			// cg.Hook.Type can be used for factory pattern and creating appropriate structs
 			if err := v.executeHook(cg.Hook, log1); err != nil {
 				break
 			}
@@ -286,8 +288,11 @@ func (v *VRGInstance) kubeObjectsCaptureStartOrResume(
 	}
 }
 
+// TODO this func/method needs to be part of different package
 func (v *VRGInstance) executeHook(hook kubeobjects.HookSpec, log1 logr.Logger) error {
+	// TODO type check would no more be needed here, it will taken care in the factory.
 	if hook.Type == "check" {
+		// TODO EvaluateCheckHook needs to be removed from util and moved to hooks package
 		hookResult, err := util.EvaluateCheckHook(v.reconciler.APIReader, &hook, log1)
 
 		if err != nil {
@@ -299,6 +304,7 @@ func (v *VRGInstance) executeHook(hook kubeobjects.HookSpec, log1 logr.Logger) e
 
 		if !hookResult && shouldHookBeFailedOnError(&hook) {
 			// update error state
+			// TODO on this error, reconcilation should stop?
 			return fmt.Errorf("stopping workflow sequence as check hook failed")
 		}
 		// update error state
@@ -661,6 +667,8 @@ func (v *VRGInstance) kubeObjectsRecoveryStartOrResume(
 		log1 := log.WithValues("group", groupNumber, "name", rg.BackupName)
 
 		if rg.IsHook {
+			// TODO here instead of v as type, appropriate hook needs to be used
+			// cg.Hook.Type can be used for factory pattern and creating appropriate structs
 			if err := v.executeHook(rg.Hook, log1); err != nil {
 				return fmt.Errorf("check hook execution failed during restore %s: %v", rg.Hook.Name, err)
 			}
