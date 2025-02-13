@@ -75,6 +75,10 @@ func (v *VRGInstance) kubeObjectsProtect(
 	captureInProgressStatusUpdate captureInProgressStatusUpdate,
 ) {
 	if v.kubeObjectProtectionDisabled("capture") {
+		// set the in-memory condition to nil to indicate that we don't need
+		// kube objects protected for this vrg
+		v.kubeObjectsProtected = nil
+
 		return
 	}
 
@@ -303,6 +307,8 @@ func (v *VRGInstance) executeCaptureSteps(result *ctrl.Result, pathName, capture
 
 			return allEssentialStepsFailed, fmt.Errorf("kube objects group capturing incomplete")
 		}
+
+		log1.Info("Kube objects group capturing", "complete", requestsCompletedCount, "total", requestsProcessedCount)
 	}
 
 	if essentialStepsCount == 0 {
