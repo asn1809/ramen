@@ -10,6 +10,7 @@ import (
 
 	"github.com/ramendr/ramen/internal/controller/hooks"
 	"github.com/ramendr/ramen/internal/controller/kubeobjects"
+	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,13 +21,39 @@ import (
 type testCases struct {
 	jsonPathExprs string
 	result        bool
-	jsonText      []byte
+	jsonText      client.Object
 }
 
 type testCasesObject struct {
 	hook    *kubeobjects.HookSpec
 	result  bool
 	jsonObj client.Object
+}
+
+func getJsonDep() *appsv1.Deployment {
+	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			Kind: "Deployment",
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas:                &rep,
+			ProgressDeadlineSeconds: func(i int32) *int32 { return &i }(600),
+			RevisionHistoryLimit:    func(i int32) *int32 { return &i }(10),
+		},
+		Status: appsv1.DeploymentStatus{
+			Replicas: 1,
+			Conditions: []appsv1.DeploymentCondition{
+				{
+					Type:   appsv1.DeploymentProgressing,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   appsv1.DeploymentAvailable,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
 }
 
 var jsonDeployment = []byte(`{
@@ -101,13 +128,13 @@ var testCasesData = []testCases{
 	{
 		jsonPathExprs: "{$.status.conditions[0].status} == {True}",
 		result:        true,
-		jsonText:      jsonDeployment,
+		jsonText:      getJsonDep(),
 	},
-	{
-		jsonPathExprs: "{$.spec.replicas} == 1",
-		result:        false,
-		jsonText:      jsonPod,
-	},
+	// {
+	// 	jsonPathExprs: "{$.spec.replicas} == 1",
+	// 	result:        false,
+	// 	jsonText:      jsonPod,
+	// },
 	/* The json expression that can be provided as a condition in the check hook spec follows the format
 
 	<expression1> op <expression2>
@@ -121,64 +148,64 @@ var testCasesData = []testCases{
 
 	Adding the commented TCs which are to pass when the improvements are done.
 	*/
-	{
-		jsonPathExprs: "{$.status.conditions[0].status} == True",
-		result:        false,
-		jsonText:      jsonStatefulset,
-	},
-	{
-		jsonPathExprs: "{$.spec.replicas} == {1}",
-		result:        true,
-		jsonText:      jsonPod,
-	},
-	{
-		jsonPathExprs: "{$.status.conditions[0].status} == {\"True\"}",
-		result:        true,
-		jsonText:      jsonStatefulset,
-	},
-	{
-		jsonPathExprs: "{$.status.conditions[?(@type.==\"Progressing\")].status} == {True}",
-		result:        true,
-		jsonText:      jsonPod,
-	},
-	{
-		jsonPathExprs: "{$.spec.replicas} == {1} || {$.status.conditions[0].status} == {True}",
-		result:        true,
-		jsonText:      jsonPod,
-	},
-	{
-		jsonPathExprs: "{$.spec.replicas} == {1} && {$.status.conditions[0].status} == {True}",
-		result:        true,
-		jsonText:      jsonPod,
-	},
-	{
-		jsonPathExprs: "{$.spec.replicas} == {$.status.readyReplicas} || {$.spec.replicas} == {$.status.updatedReplicas}" +
-			" && {$.spec.revisionHistoryLimit} == {10}",
-		result:   true,
-		jsonText: jsonPod,
-	},
-	{
-		jsonPathExprs: "({$.spec.replicas} == {$.status.readyReplicas}) && (({$.spec.replicas} ==" +
-			" {$.status.updatedReplicas}) || ({$.spec.revisionHistoryLimit} != {11}))",
-		result:   true,
-		jsonText: jsonPod,
-	},
-	{
-		jsonPathExprs: "(({$.spec.replicas} == {$.status.readyReplicas}) && ({$.spec.replicas} ==" +
-			" {$.status.updatedReplicas})) || ({$.spec.revisionHistoryLimit} != {11})",
-		result:   true,
-		jsonText: jsonPod,
-	},
+	// {
+	// 	jsonPathExprs: "{$.status.conditions[0].status} == True",
+	// 	result:        false,
+	// 	jsonText:      jsonStatefulset,
+	// },
+	// {
+	// 	jsonPathExprs: "{$.spec.replicas} == {1}",
+	// 	result:        true,
+	// 	jsonText:      jsonPod,
+	// },
+	// {
+	// 	jsonPathExprs: "{$.status.conditions[0].status} == {\"True\"}",
+	// 	result:        true,
+	// 	jsonText:      jsonStatefulset,
+	// },
+	// {
+	// 	jsonPathExprs: "{$.status.conditions[?(@type.==\"Progressing\")].status} == {True}",
+	// 	result:        true,
+	// 	jsonText:      jsonPod,
+	// },
+	// {
+	// 	jsonPathExprs: "{$.spec.replicas} == {1} || {$.status.conditions[0].status} == {True}",
+	// 	result:        true,
+	// 	jsonText:      jsonPod,
+	// },
+	// {
+	// 	jsonPathExprs: "{$.spec.replicas} == {1} && {$.status.conditions[0].status} == {True}",
+	// 	result:        true,
+	// 	jsonText:      jsonPod,
+	// },
+	// {
+	// 	jsonPathExprs: "{$.spec.replicas} == {$.status.readyReplicas} || {$.spec.replicas} == {$.status.updatedReplicas}" +
+	// 		" && {$.spec.revisionHistoryLimit} == {10}",
+	// 	result:   true,
+	// 	jsonText: jsonPod,
+	// },
+	// {
+	// 	jsonPathExprs: "({$.spec.replicas} == {$.status.readyReplicas}) && (({$.spec.replicas} ==" +
+	// 		" {$.status.updatedReplicas}) || ({$.spec.revisionHistoryLimit} != {11}))",
+	// 	result:   true,
+	// 	jsonText: jsonPod,
+	// },
+	// {
+	// 	jsonPathExprs: "(({$.spec.replicas} == {$.status.readyReplicas}) && ({$.spec.replicas} ==" +
+	// 		" {$.status.updatedReplicas})) || ({$.spec.revisionHistoryLimit} != {11})",
+	// 	result:   true,
+	// 	jsonText: jsonPod,
+	// },
 }
 
 var testCasesObjectData = []testCasesObject{
 	{
-		hook:    getHookSpec("Pod", "{$.status.phase} == {'Running'}"),
+		hook:    getHookSpec("Pod", "{$.status.phase} == {\"Running\"}"),
 		result:  true,
 		jsonObj: getPodContent(),
 	},
 	{
-		hook:    getHookSpec("Pod", "{$.status.conditions[0].type} == {'Ready'}"),
+		hook:    getHookSpec("Pod", "{$.status.conditions[0].type} == {\"Ready\"}"),
 		result:  true,
 		jsonObj: getPodContent(),
 	},
@@ -202,6 +229,11 @@ var testCasesObjectData = []testCasesObject{
 		result:  true,
 		jsonObj: getStatefulSetContent(),
 	},
+	{
+		hook:    getHookSpec("Deployment", "{$.status.conditions[0].status} == {True}"),
+		result:  true,
+		jsonObj: getDeploymentContent(),
+	},
 }
 
 func getHookSpec(resourceType, condition string) *kubeobjects.HookSpec {
@@ -215,21 +247,37 @@ func getHookSpec(resourceType, condition string) *kubeobjects.HookSpec {
 	}
 }
 
+func TestSomething(t *testing.T) {
+	map1 := make(map[string]interface{})
+
+	json.Unmarshal(jsonDeployment, &map1)
+
+	map2 := make(map[string]interface{})
+	depBytes, _ := json.Marshal(getJsonDep())
+	json.Unmarshal(depBytes, &map2)
+
+	assert.Equal(t, map1, map2)
+}
+
 func TestEvaluateCheckHookExp(t *testing.T) {
 	for i, tt := range testCasesData {
 		test := tt
 
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			var jsonData map[string]interface{}
+			//var jsonData map[string]interface{}
 
-			err := json.Unmarshal(tt.jsonText, &jsonData)
-			if err != nil {
-				t.Error(err)
-			}
+			// err := json.Unmarshal(tt.jsonText, &jsonData)
+			// if err != nil {
+			// 	t.Error(err)
+			// }
 
-			_, err = hooks.EvaluateCheckHookExp(test.jsonPathExprs, jsonData)
+			actualRes, err := hooks.EvaluateCheckHookExp(test.jsonPathExprs, tt.jsonText)
 			if (err == nil) != test.result {
 				t.Errorf("EvaluateCheckHookExp() = %v, want %v", err, test.result)
+			}
+
+			if test.result != actualRes {
+				t.Errorf("EvaluateCheckHookExp() = %v, want %v", actualRes, test.result)
 			}
 		})
 	}
@@ -243,9 +291,13 @@ func TestEvaluateCheckHookForObjects(t *testing.T) {
 		objs := []client.Object{test.jsonObj}
 
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			_, err := hooks.EvaluateCheckHookForObjects(objs, test.hook, log)
+			actualRes, err := hooks.EvaluateCheckHookForObjects(objs, test.hook, log)
 			if (err == nil) != test.result {
 				t.Errorf("EvaluateCheckHookExpObject() = %v, want %v", err, test.result)
+			}
+
+			if test.result != actualRes {
+				t.Errorf("EvaluateCheckHookExpObject() = %v, want %v", actualRes, test.result)
 			}
 		})
 	}

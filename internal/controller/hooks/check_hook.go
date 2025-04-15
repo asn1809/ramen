@@ -78,6 +78,8 @@ func EvaluateCheckHook(k8sReader client.Reader, hook *kubeobjects.HookSpec, log 
 				return false, err // Some other error occurred, return it
 			}
 
+			log.Info("evaluating check hook", "number of objects obtained", len(objs), "hook name", hook.Name)
+
 			if len(objs) == 0 {
 				pollInterval *= 2
 				ticker.Reset(pollInterval)

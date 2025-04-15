@@ -62,18 +62,27 @@ func evaluateBooleanExpression(expression string, jsonData interface{}) (bool, e
 		return false, fmt.Errorf("failed to parse boolean expression: %w", err)
 	}
 
+	fmt.Println("*** ASN result of parseBooleanExpression", "op ", op, " jsonpaths ", jsonPaths)
+
 	operands := make([]reflect.Value, len(jsonPaths))
 
 	for i, jsonPath := range jsonPaths {
-		if strings.HasPrefix(jsonPath, "$") {
+
+		if strings.HasPrefix(jsonPath, "{$") {
+			jsonPath = strings.ReplaceAll(jsonPath, "$", "")
+
 			operands[i], err = QueryJSONPath(jsonData, jsonPath)
 			if err != nil {
 				return false, fmt.Errorf("failed to get value for %v: %w", jsonPath, err)
 			}
 		} else {
+			jsonPath = strings.Trim(jsonPath, "{}")
+
 			operands[i] = reflect.ValueOf(jsonPath)
 		}
 	}
+
+	fmt.Println("*** ASN value of operands for compare:", operands[0], " ", operands[1])
 
 	return compare(operands[0], operands[1], op)
 }
@@ -142,6 +151,8 @@ func compare(a, b reflect.Value, operator string) (bool, error) {
 	if b.Kind() == reflect.Ptr {
 		b = b.Elem()
 	}
+
+	fmt.Println("*** ASN value of a and b for compare:", a, " & ", b)
 
 	// Convert interface{} to actual type instead of just converting to string
 	if a.Kind() == reflect.Interface {
@@ -237,6 +248,8 @@ func convertToBoolean(v reflect.Value) reflect.Value {
 			return reflect.ValueOf(true)
 		case "false":
 			return reflect.ValueOf(false)
+		default:
+			return reflect.ValueOf(strVal)
 		}
 	}
 
