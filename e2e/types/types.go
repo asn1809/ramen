@@ -90,4 +90,18 @@ type TestContext interface {
 
 	// Namespace for application resources on the managed clusters.
 	AppNamespace() string
+
+	// Disapp helps configuring the recipe requirement for the discovered application.
+	Disapp() *Disapp
+}
+
+type Disapp struct {
+	Recipe *Recipe
+}
+
+// Recipe defines a recipe for a workload, which can be applied to a cluster.
+type Recipe struct {
+	ExecuteCheckHooks bool // If true, check hooks will be executed.
+
+	ExecuteExecHooks bool // If true, exec hooks will be executed.
 }

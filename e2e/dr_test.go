@@ -5,11 +5,11 @@ package e2e_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/ramendr/ramen/e2e/config"
 	"github.com/ramendr/ramen/e2e/deployers"
 	"github.com/ramendr/ramen/e2e/test"
+	"github.com/ramendr/ramen/e2e/types"
 	"github.com/ramendr/ramen/e2e/util"
 	"github.com/ramendr/ramen/e2e/validate"
 	"github.com/ramendr/ramen/e2e/workloads"
@@ -31,14 +31,14 @@ func TestDR(dt *testing.T) {
 		t.Fatalf("Failed to ensure channel: %s", err)
 	}
 
-	t.Cleanup(func() {
-		timedCtx, cancel := Ctx.WithTimeout(1 * time.Minute)
-		defer cancel()
+	// t.Cleanup(func() {
+	// 	timedCtx, cancel := Ctx.WithTimeout(1 * time.Minute)
+	// 	defer cancel()
 
-		if err := util.EnsureChannelDeleted(timedCtx); err != nil {
-			t.Fatalf("Failed to ensure channel deleted: %s", err)
-		}
-	})
+	// 	if err := util.EnsureChannelDeleted(timedCtx); err != nil {
+	// 		t.Fatalf("Failed to ensure channel deleted: %s", err)
+	// 	}
+	// })
 
 	pvcSpecs := config.PVCSpecsMap(Ctx.config)
 
@@ -59,6 +59,17 @@ func TestDR(dt *testing.T) {
 		}
 
 		ctx := test.NewContext(&Ctx, workload, deployer)
+
+		if tc.Disapp != nil {
+			ctx.SetDisapp(&types.Disapp{
+				Recipe: &types.Recipe{
+					ExecuteCheckHooks: tc.Disapp.Recipe.ExecuteCheckHooks,
+					ExecuteExecHooks:  tc.Disapp.Recipe.ExecuteExecHooks,
+				},
+			})
+			// set and get can be used for recipe.
+		}
+
 		t.Run(ctx.Name(), func(dt *testing.T) {
 			t := test.WithLog(dt, ctx.Logger())
 			t.Parallel()

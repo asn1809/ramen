@@ -39,7 +39,8 @@ func EnableProtectionDiscoveredApps(ctx types.TestContext) error {
 	}
 
 	drpc := generateDRPCDiscoveredApps(
-		name, managementNamespace, cluster.Name, drPolicyName, placementName, appname, appNamespace)
+		cluster.Name, drPolicyName, appname, ctx)
+
 	if err := createDRPC(ctx, drpc); err != nil {
 		return err
 	}

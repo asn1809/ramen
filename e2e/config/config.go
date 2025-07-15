@@ -67,9 +67,19 @@ type Cluster struct {
 }
 
 type Test struct {
-	Workload string `json:"workload"`
-	Deployer string `json:"deployer"`
-	PVCSpec  string `json:"pvcSpec"`
+	Workload string  `json:"workload"`
+	Deployer string  `json:"deployer"`
+	PVCSpec  string  `json:"pvcSpec"`
+	Disapp   *Disapp `json:"disapp"`
+}
+
+type Disapp struct {
+	Recipe *Recipe `json:"recipe"`
+}
+
+type Recipe struct {
+	ExecuteCheckHooks bool `json:"executeCheckHooks"`
+	ExecuteExecHooks  bool `json:"executeExecHooks"`
 }
 
 // Config keeps configuration for e2e tests.

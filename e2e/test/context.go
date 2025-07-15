@@ -28,6 +28,7 @@ type Context struct {
 	deployer types.Deployer
 	name     string
 	logger   *zap.SugaredLogger
+	disapp   *types.Disapp
 }
 
 func NewContext(
@@ -53,6 +54,34 @@ func (c *Context) Deployer() types.Deployer {
 
 func (c *Context) Workload() types.Workload {
 	return c.workload
+}
+
+func (c *Context) SetDisapp(disapp *types.Disapp) {
+	c.disapp = disapp
+	if c.disapp != nil {
+
+		if c.disapp.Recipe.ExecuteCheckHooks &&
+			c.disapp.Recipe.ExecuteExecHooks {
+			c.Logger().Infof("Discovered app %s-recipe will execute both check and exec hooks", c.name)
+			c.name = c.name + "-recipe-h"
+		}
+
+		if c.disapp.Recipe.ExecuteCheckHooks && !c.disapp.Recipe.ExecuteExecHooks {
+			c.name = c.name + "-recipe-ch"
+		}
+
+		if !c.disapp.Recipe.ExecuteCheckHooks && c.disapp.Recipe.ExecuteExecHooks {
+			c.name = c.name + "-recipe-eh"
+		}
+
+		if !c.disapp.Recipe.ExecuteCheckHooks && !c.disapp.Recipe.ExecuteExecHooks {
+			c.name = c.name + "-recipe-nh"
+		}
+	}
+}
+
+func (c *Context) Disapp() *types.Disapp {
+	return c.disapp
 }
 
 func (c *Context) Name() string {

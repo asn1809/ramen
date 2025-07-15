@@ -27,6 +27,7 @@ pvcspecs:
 # List to tests to run.
 # Available workloads: deploy
 # Available deployers: appset, subscr, disapp
+# Disapp structure helps defining the requirement to run the hooks. If omitted, recipe will not be executed.
 # Test names are generated as "{deployer}-{workload}-{pvcspec}".
 tests:
   - deployer: appset
@@ -47,6 +48,31 @@ tests:
   - deployer: disapp
     workload: deploy
     pvcspec: cephfs
+  - deployer: disapp
+    workload: deploy
+    pvcspec: rbd
+    disapp:
+      recipe:
+        executeCheckHooks: false
+        executeExecHooks: false
+  - deployer: disapp
+    workload: deploy
+    pvcspec: cephfs
+    disapp:
+      recipe:
+        executeCheckHooks: true
+        executeExecHooks: true
+
+  - deployer: disapp
+    workload: vmpvc
+    pvcspec: rbd
+    
+
+    drpc:
+      pvsSelector:
+      kubeObject: 
+        KubeObjectSelector
+        recipeRef: name and ns
 
 # Sample cluster configurations:
 # Uncomment and edit the following lines to set the cluster
