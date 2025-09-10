@@ -1150,14 +1150,31 @@ func convertRecipeHookToRecoverSpec(hook Recipe.Hook, suffix string) (*kubeobjec
 // TODO: Return error as well or ensure that other than exec and check hooks are
 // handled properly.
 func getHookSpecFromHook(hook Recipe.Hook, suffix string) kubeobjects.HookSpec {
-	// based on hook.type check of the hook is chks or ops
-	if hook.Type == "exec" {
+	// based on hook.type, the hook is chks, ops or scale
+	switch hook.Type {
+	case "exec":
 		return getOpHookSpec(&hook, suffix)
-	} else if hook.Type == "check" {
+	case "check":
 		return getChkHookSpec(&hook, suffix)
+	case "scale":
+		return getScaleHookSpec(&hook, suffix)
+	default:
+		return kubeobjects.HookSpec{}
 	}
+}
 
-	return kubeobjects.HookSpec{}
+func getScaleHookSpec(hook *Recipe.Hook, suffix string) kubeobjects.HookSpec {
+	return kubeobjects.HookSpec{
+		Name:          hook.Name,
+		Namespace:     hook.Namespace,
+		Type:          hook.Type,
+		LabelSelector: hook.LabelSelector,
+		NameSelector:  hook.NameSelector,
+		Essential:     hook.Essential,
+		Timeout:       hook.Timeout,
+		// suffix will be up, down, or sync
+		ScaleOp: suffix,
+	}
 }
 
 func getChkHookSpec(hook *Recipe.Hook, suffix string) kubeobjects.HookSpec {

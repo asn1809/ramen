@@ -113,6 +113,8 @@ type HookSpec struct {
 	Op Operation `json:"operation,omitempty"`
 
 	Chk Check `json:"check,omitempty"`
+
+	ScaleOp string `json:"scaleOp,omitempty"`
 }
 
 type Check struct {

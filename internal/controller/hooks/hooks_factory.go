@@ -29,6 +29,8 @@ func GetHookExecutor(hook kubeobjects.HookSpec, reader client.Reader, scheme *ru
 		return CheckHook{Hook: &hook, Reader: reader}, nil
 	case "exec":
 		return ExecHook{Hook: &hook, Reader: reader, Scheme: scheme, RecipeElements: recipeElements}, nil
+	case "scale":
+		return ScaleHook{Hook: &hook, Reader: reader}, nil
 	default:
 		return nil, fmt.Errorf("unsupported hook type")
 	}
