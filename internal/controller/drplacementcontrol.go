@@ -174,6 +174,29 @@ func (d *DRPCInstance) RunInitialDeployment() (bool, error) {
 		return !done, err
 	}
 
+	// TODO: create application ns on secondary
+	protectedNamespaceObjects, err := d.getProtectedNamespaces(homeCluster)
+	if err != nil {
+		return !done, err
+	}
+
+	for _, protectedNamespaceObj := range protectedNamespaceObjects {
+
+		annotations := filteroutSCCAnnotations(protectedNamespaceObj.Annotations)
+
+		for _, dstCluster := range rmnutil.DRPolicyClusterNames(d.drPolicy) {
+			if homeCluster == dstCluster {
+				continue
+			}
+
+			if err := d.mwu.CreateOrUpdateNamespaceManifest(d.instance.Name, protectedNamespaceObj.Name, dstCluster,
+				annotations, protectedNamespaceObj.Labels); err != nil {
+				return !done, err
+			}
+		}
+
+	}
+
 	// If we get here, the deployment is successful
 	err = d.EnsureSecondaryReplicationSetup(homeCluster)
 	if err != nil {
@@ -2031,7 +2054,8 @@ func (d *DRPCInstance) ensureNamespaceManifestWork(homeCluster string) error {
 		annotations[DRPCNameAnnotation] = d.instance.Name
 		annotations[DRPCNamespaceAnnotation] = d.instance.Namespace
 
-		err := d.mwu.CreateOrUpdateNamespaceManifest(d.instance.Name, d.vrgNamespace, homeCluster, annotations)
+		err := d.mwu.CreateOrUpdateNamespaceManifest(d.instance.Name, d.vrgNamespace, homeCluster, annotations,
+			map[string]string{})
 		if err != nil {
 			return fmt.Errorf("failed to create namespace '%s' on cluster %s: %w", d.vrgNamespace, homeCluster, err)
 		}
@@ -2727,6 +2751,24 @@ func (d *DRPCInstance) setActionDuration() {
 		fmt.Sprintf("%v", d.instance.Status.Phase), d.instance.Status.ActionStartTime, duration))
 }
 
+func (d *DRPCInstance) getProtectedNamespaces(homeCluster string) ([]*corev1.Namespace, error) {
+	var protectedNamespaces []*corev1.Namespace
+	var err error
+
+	for _, ns := range *d.instance.Spec.ProtectedNamespaces {
+		protectedNamespace, err := d.reconciler.MCVGetter.GetNSFromManagedCluster(homeCluster, ns)
+		if err != nil {
+			d.log.Error(err, fmt.Sprintf("error getting namespace %s from managed cluster %s using MCV"))
+
+			return nil, err
+		}
+
+		protectedNamespaces = append(protectedNamespaces, protectedNamespace)
+	}
+
+	return protectedNamespaces, err
+}
+
 func getCallerFunction(ancestorLevel int) string {
 	// this is a util function and the caller is not going to count this
 	// function in the skiplevel. Incrementing the skiplevel by 1
@@ -2747,4 +2789,16 @@ func getCallerFunction(ancestorLevel int) string {
 	}
 
 	return strings.TrimPrefix(details.Name(), "github.com/ramendr/ramen/internal/controller.")
+}
+
+func filteroutSCCAnnotations(annotations map[string]string) map[string]string {
+	filteredAnnotations := make(map[string]string)
+
+	for key, val := range annotations {
+		if !strings.Contains(key, "sa.scc") {
+			filteredAnnotations[key] = val
+		}
+	}
+
+	return filteredAnnotations
 }
