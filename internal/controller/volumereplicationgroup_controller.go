@@ -60,7 +60,7 @@ type VolumeReplicationGroupReconciler struct {
 	RateLimiter            *workqueue.TypedRateLimiter[reconcile.Request]
 	veleroCRsAreWatched    bool
 	recipeRetries          sync.Map
-	excludedResourcesMgr   *ExcludedResourcesManager
+	excludedResourcesMgr   *velero.ExcludedResourcesManager
 	excludedResourcesMutex sync.RWMutex
 	cachedExcludedResources []string
 }
@@ -128,7 +128,7 @@ func (r *VolumeReplicationGroupReconciler) SetupWithManager(
 		ctrlBuilder = r.addKubeObjectsOwnsAndWatches(ctrlBuilder)
 
 		// Initialize the excluded resources manager
-		r.excludedResourcesMgr = NewExcludedResourcesManager(
+		r.excludedResourcesMgr = velero.NewExcludedResourcesManager(
 			r.Client,
 			RamenOperatorNamespace(),
 			r.Log.WithName("excluded-resources"),
@@ -175,7 +175,7 @@ func (r *VolumeReplicationGroupReconciler) configMapFun(
 	log := ctrl.Log.WithName("configmap").WithName("VolumeReplicationGroup")
 
 	// Handle default-excluded-resources ConfigMap
-	if configmap.GetName() == DefaultExcludedResourcesConfigMapName &&
+	if configmap.GetName() == velero.DefaultExcludedResourcesConfigMapName &&
 		configmap.GetNamespace() == RamenOperatorNamespace() {
 		log.Info("Update in default-excluded-resources ConfigMap, reloading")
 
