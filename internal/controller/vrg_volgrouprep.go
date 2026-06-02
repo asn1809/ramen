@@ -58,8 +58,20 @@ func (v *VRGInstance) reconcileVolGroupRepsAsPrimary(groupPVCs map[types.Namespa
 			// Annotate the PV with the destination volume handle if available from VR status.
 			// This allows the secondary cluster to restore the PV with the correct volume handle
 			// when source and destination volume IDs differ.
-			if err := v.annotateWithDestinationVolumeHandleForVolGroupRep(vgrNamespacedName, pvc); err != nil {
+			// If VGR is not yet available, skip both annotation and S3 upload to ensure we don't
+			// upload PVs without proper destination info. The next reconcile will handle both.
+			annotated, err := v.annotateWithDestinationVolumeHandleForVolGroupRep(vgrNamespacedName, pvc)
+			if err != nil {
 				log.Error(err, fmt.Sprintf("failed to annotate PV of PVC %s with destination volume handle",
+					pvc.Name))
+
+				v.requeue()
+
+				continue
+			}
+
+			if !annotated {
+				log.Info(fmt.Sprintf("VGR not yet available for PVC %s, skipping S3 upload until next reconcile",
 					pvc.Name))
 
 				v.requeue()
@@ -944,37 +956,47 @@ func (v *VRGInstance) deleteVGR(vrNamespacedName types.NamespacedName, log logr.
 
 // annotateWithDestinationVolumeHandleForVolGroupRep looks up the VolumeGroupReplication for the PVC
 // and annotates the PV with the destination volume handle if available.
+// Returns (true, nil) if annotation was successful or not needed.
+// Returns (false, nil) if VGR is not yet available (caller should skip S3 upload and retry).
+// Returns (false, error) for actual errors.
 func (v *VRGInstance) annotateWithDestinationVolumeHandleForVolGroupRep(vrNamespacedName types.NamespacedName,
 	pvc *corev1.PersistentVolumeClaim,
-) error {
+) (bool, error) {
 	pv, err := v.getPVFromPVC(pvc)
 	if err != nil {
-		return fmt.Errorf("failed to get PV for PVC %s: %w", pvc.Name, err)
+		return false, fmt.Errorf("failed to get PV for PVC %s: %w", pvc.Name, err)
 	}
 
 	vgr := &volrep.VolumeGroupReplication{}
 
 	if err := v.reconciler.Get(v.ctx, vrNamespacedName, vgr); err != nil {
+		if k8serrors.IsNotFound(err) {
+			v.log.Info(fmt.Sprintf("VGR %s not yet available for PV %s, will retry on next reconcile",
+				vrNamespacedName.Name, pv.Name))
+
+			return false, nil
+		}
+
 		v.log.Info(fmt.Sprintf("failed to get VGR %s for PV %s err %s", vrNamespacedName.Name, pv.Name, err))
 
-		return err
+		return false, err
 	}
 
 	available, err := v.destinationInfoAvailableOrSkip(vgr.Status.Conditions,
 		fmt.Sprintf("VGR %s", vgr.Name), pv.Name)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if !available {
-		return nil
+		return true, nil
 	}
 
 	vgrc, err := v.getVGRCFromVGR(vgr)
 	if err != nil {
 		v.log.Error(err, "failed to annotate PV %s for PVC - no VGRContent found", "pvc", pvc.Name)
 
-		return fmt.Errorf("failed to get VolumeGroupReplicationContent for VGR %s: %w", vgr.Name, err)
+		return false, fmt.Errorf("failed to get VolumeGroupReplicationContent for VGR %s: %w", vgr.Name, err)
 	}
 
 	for _, pvMapping := range vgrc.Status.PersistentVolumeMappingList {
@@ -983,13 +1005,17 @@ func (v *VRGInstance) annotateWithDestinationVolumeHandleForVolGroupRep(vrNamesp
 		}
 
 		if pvMapping.DestinationVolumeHandle == "" {
-			return fmt.Errorf("destination volume ID is empty for VGR %s", vgr.Name)
+			return false, fmt.Errorf("destination volume ID is empty for VGR %s", vgr.Name)
 		}
 
-		return v.applyDestinationVolumeHandleToPV(&pv, pvMapping.DestinationVolumeHandle)
+		if err := v.applyDestinationVolumeHandleToPV(&pv, pvMapping.DestinationVolumeHandle); err != nil {
+			return false, err
+		}
+
+		return true, nil
 	}
 
-	return fmt.Errorf("no persistent volume mapping for PV %s in VolumeGroupReplicationContent %s",
+	return false, fmt.Errorf("no persistent volume mapping for PV %s in VolumeGroupReplicationContent %s",
 		pv.Name, vgrc.Name)
 }
 

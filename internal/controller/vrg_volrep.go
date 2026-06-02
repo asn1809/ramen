@@ -162,8 +162,20 @@ func (v *VRGInstance) reconcileVolRepsAsPrimary() {
 		// Annotate the PV with the destination volume handle if available from VR status.
 		// This allows the secondary cluster to restore the PV with the correct volume handle
 		// when source and destination volume IDs differ.
-		if err := v.annotateWithDestinationVolumeHandleForVolRep(pvc); err != nil {
+		// If VR is not yet available, skip both annotation and S3 upload to ensure we don't
+		// upload PVs without proper destination info. The next reconcile will handle both.
+		annotated, err := v.annotateWithDestinationVolumeHandleForVolRep(pvc)
+		if err != nil {
 			log.Error(err, fmt.Sprintf("failed to annotate PV of PVC %s with destination volume handle",
+				pvc.Name))
+
+			v.requeue()
+
+			continue
+		}
+
+		if !annotated {
+			log.Info(fmt.Sprintf("VR not yet available for PVC %s, skipping S3 upload until next reconcile",
 				pvc.Name))
 
 			v.requeue()
@@ -833,36 +845,50 @@ func (v *VRGInstance) applyDestinationVolumeHandleToPV(
 
 // annotateWithDestinationVolumeHandleForVolRep looks up the VolumeReplication for the PVC
 // and annotates the PV with the destination volume handle if available.
-func (v *VRGInstance) annotateWithDestinationVolumeHandleForVolRep(pvc *corev1.PersistentVolumeClaim) error {
+// Returns (true, nil) if annotation was successful or not needed.
+// Returns (false, nil) if VR is not yet available (caller should skip S3 upload and retry).
+// Returns (false, error) for actual errors.
+func (v *VRGInstance) annotateWithDestinationVolumeHandleForVolRep(pvc *corev1.PersistentVolumeClaim) (bool, error) {
 	pv, err := v.getPVFromPVC(pvc)
 	if err != nil {
-		return fmt.Errorf("failed to get PV for PVC %s: %w", pvc.Name, err)
+		return false, fmt.Errorf("failed to get PV for PVC %s: %w", pvc.Name, err)
 	}
 
 	volRep := &volrep.VolumeReplication{}
 	vrNamespacedName := types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}
 
 	if err := v.reconciler.Get(v.ctx, vrNamespacedName, volRep); err != nil {
+		if k8serrors.IsNotFound(err) {
+			v.log.Info(fmt.Sprintf("VR %s not yet available for PV %s, will retry on next reconcile",
+				pvc.Name, pv.Name))
+
+			return false, nil
+		}
+
 		v.log.Info(fmt.Sprintf("failed to get VR %s for PV %s err %s", pvc.Name, pv.Name, err))
 
-		return err
+		return false, err
 	}
 
 	available, err := v.destinationInfoAvailableOrSkip(volRep.Status.Conditions,
 		fmt.Sprintf("VR %s", volRep.Name), pv.Name)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if !available {
-		return nil
+		return true, nil
 	}
 
 	if volRep.Status.DestinationVolumeID == "" {
-		return fmt.Errorf("destination volume ID is empty for VR %s", volRep.Name)
+		return false, fmt.Errorf("destination volume ID is empty for VR %s", volRep.Name)
 	}
 
-	return v.applyDestinationVolumeHandleToPV(&pv, volRep.Status.DestinationVolumeID)
+	if err := v.applyDestinationVolumeHandleToPV(&pv, volRep.Status.DestinationVolumeID); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 func (v *VRGInstance) UploadPVandPVCtoS3Store(s3ProfileName string, pvc *corev1.PersistentVolumeClaim) error {
