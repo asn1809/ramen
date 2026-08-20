@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Ramen
-
+test
 Ramen is an
 [open-cluster-management (OCM)](https://open-cluster-management.io/docs/concepts/architecture/)
 [placement](https://open-cluster-management.io/docs/concepts/content-placement/placement/)
