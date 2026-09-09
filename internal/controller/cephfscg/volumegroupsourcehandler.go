@@ -13,6 +13,7 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	"github.com/go-logr/logr"
 	vsv1 "github.com/kubernetes-csi/external-snapshotter/client/v8/apis/volumesnapshot/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +23,8 @@ import (
 	ctrlutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	ramendrv1alpha1 "github.com/ramendr/ramen/api/v1alpha1"
+	"github.com/ramendr/ramen/internal/controller/hooks"
+	"github.com/ramendr/ramen/internal/controller/kubeobjects"
 	"github.com/ramendr/ramen/internal/controller/util"
 	"github.com/ramendr/ramen/internal/controller/volsync"
 )
@@ -545,8 +548,10 @@ func (h *volumeGroupSourceHandler) CreateOrUpdateReplicationSourceForRestoredPVC
 		createdOrUpdated = createdOrUpdated ||
 			(op == ctrlutil.OperationResultCreated || op == ctrlutil.OperationResultUpdated)
 
-		h.VSHandler.EnsureVolSyncMoverJobLabels(originalPVCName, replicationSourceNamespace)
-		h.VSHandler.EnsureVolSyncServiceImportLabels(originalPVCName, replicationSourceNamespace)
+		if h.VSHandler != nil {
+			h.VSHandler.EnsureVolSyncMoverJobLabels(originalPVCName, replicationSourceNamespace)
+			h.VSHandler.EnsureVolSyncServiceImportLabels(originalPVCName, replicationSourceNamespace)
+		}
 
 		replicationSources = append(replicationSources, &corev1.ObjectReference{
 			APIVersion: replicationSource.APIVersion,
@@ -715,32 +720,263 @@ func (h *volumeGroupSourceHandler) EnsureApplicationPVCsMounted(
 
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
-		rsSpec := ramendrv1alpha1.VolSyncReplicationSourceSpec{
-			ProtectedPVC: ramendrv1alpha1.ProtectedPVC{
-				Name:               pvc.Name,
-				Namespace:          pvc.Namespace,
-				ProtectedByVolSync: true,
-			},
-		}
 
-		ready, mountErr := h.VSHandler.EnsureMountJobForUnmountedPVC(&rsSpec)
-		if mountErr != nil {
-			h.Logger.Error(mountErr, "Failed to ensure application PVC is mounted", "pvc", pvc.Namespace+"/"+pvc.Name)
-
-			return false, mountErr
+		ready, err := h.ensurePVCMountedForSnapshot(ctx, pvc)
+		if err != nil {
+			return false, err
 		}
 
 		if !ready {
-			h.Logger.Info("Waiting for application PVCs to be mounted before first snapshot",
-				"pvc", pvc.Namespace+"/"+pvc.Name)
-
 			return false, nil
 		}
-
-		h.Logger.Info("Application PVC is mounted and ready for snapshot", "pvc", pvc.Namespace+"/"+pvc.Name)
 	}
 
 	return true, nil
+}
+
+// ensurePVCMountedForSnapshot ensures a single PVC is mounted with correct SELinux labels before
+// a VolumeGroupSnapshot is taken. If the PVC is mounted only via subPath/subPathExpr, the owning
+// workload is temporarily scaled down, a mount job is run to apply root-inode SELinux labels, and
+// then the workload is scaled back up. If the PVC is not mounted via subPath, the standard
+// EnsureMountJobForUnmountedPVC path is used.
+func (h *volumeGroupSourceHandler) ensurePVCMountedForSnapshot(
+	ctx context.Context,
+	pvc *corev1.PersistentVolumeClaim,
+) (bool, error) {
+	log := h.Logger.WithValues("pvc", pvc.Namespace+"/"+pvc.Name)
+	pvcNamespacedName := types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}
+
+	// Check if the PVC is mounted with subPath — if so we need the scale-down path.
+	subPathPods, err := util.GetPodsWithSubPathForPVC(ctx, h.Client, log, pvcNamespacedName)
+	if err != nil {
+		return false, err
+	}
+
+	if len(subPathPods) > 0 {
+		return h.ensurePVCMountedViaScaleCycle(ctx, pvc, subPathPods, log)
+	}
+
+	// No subPath mount — use the standard unmounted-PVC mount job path.
+	rsSpec := ramendrv1alpha1.VolSyncReplicationSourceSpec{
+		ProtectedPVC: ramendrv1alpha1.ProtectedPVC{
+			Name:               pvc.Name,
+			Namespace:          pvc.Namespace,
+			ProtectedByVolSync: true,
+		},
+	}
+
+	ready, mountErr := h.VSHandler.EnsureMountJobForUnmountedPVC(&rsSpec)
+	if mountErr != nil {
+		log.Error(mountErr, "Failed to ensure application PVC is mounted")
+
+		return false, mountErr
+	}
+
+	if !ready {
+		log.Info("Waiting for application PVC mount job to complete")
+
+		return false, nil
+	}
+
+	log.Info("Application PVC is mounted and ready for snapshot")
+
+	return true, nil
+}
+
+// ensurePVCMountedViaScaleCycle handles the subPath case:
+//  1. Find the scalable owner (Deployment/StatefulSet) of each subPath pod.
+//  2. Scale all owners down to 0.
+//  3. Wait until the PVC is no longer in use.
+//  4. Run a mount job (mounts PVC at root, applying correct SELinux labels).
+//  5. Scale all owners back up.
+func (h *volumeGroupSourceHandler) ensurePVCMountedViaScaleCycle(
+	ctx context.Context,
+	pvc *corev1.PersistentVolumeClaim,
+	subPathPods []corev1.Pod,
+	log logr.Logger,
+) (bool, error) {
+	pvcNamespacedName := types.NamespacedName{Name: pvc.Name, Namespace: pvc.Namespace}
+
+	// Collect unique scalable owners across all subPath pods.
+	owners, err := getScalableOwnersForPods(ctx, h.Client, subPathPods, log)
+	if err != nil {
+		return false, err
+	}
+
+	scaleHook := hooks.ScaleHook{
+		Hook:   buildDummyHookSpec(pvc.Namespace),
+		Client: h.Client,
+	}
+
+	// Step 1 — scale down all owners.
+	for _, owner := range owners {
+		if scaleErr := scaleHook.ScaleDownResource(owner, log); scaleErr != nil {
+			return false, fmt.Errorf("failed to scale down owner for pvc %s: %w", pvcNamespacedName, scaleErr)
+		}
+	}
+
+	// Step 2 — wait for PVC to be released.
+	inUse, err := util.IsPVCInUseByPod(ctx, h.Client, log, pvcNamespacedName, false)
+	if err != nil {
+		return false, err
+	}
+
+	if inUse {
+		log.Info("Waiting for pods to terminate after scale-down before running mount job")
+
+		return false, nil
+	}
+
+	// Step 3 — run mount job now that PVC is exclusively available.
+	rsSpec := ramendrv1alpha1.VolSyncReplicationSourceSpec{
+		ProtectedPVC: ramendrv1alpha1.ProtectedPVC{
+			Name:               pvc.Name,
+			Namespace:          pvc.Namespace,
+			ProtectedByVolSync: true,
+		},
+	}
+
+	ready, mountErr := h.VSHandler.EnsureMountJobForUnmountedPVC(&rsSpec)
+	if mountErr != nil {
+		return false, fmt.Errorf("mount job failed for pvc %s: %w", pvcNamespacedName, mountErr)
+	}
+
+	if !ready {
+		log.Info("Waiting for mount job to complete")
+
+		return false, nil
+	}
+
+	// Step 4 — scale all owners back up.
+	for _, owner := range owners {
+		if scaleErr := scaleHook.ScaleUpResource(owner, log); scaleErr != nil {
+			return false, fmt.Errorf("failed to scale up owner for pvc %s: %w", pvcNamespacedName, scaleErr)
+		}
+	}
+
+	log.Info("PVC mount cycle complete: scaled down, mount job run, scaled up")
+
+	return true, nil
+}
+
+// getScalableOwnersForPods walks the owner chain of each pod to find its scalable root owner
+// (Deployment or StatefulSet). Returns unique owners deduplicated by namespace/name/kind.
+// Pods owned by DaemonSets or unrecognised controllers are skipped with a log warning.
+func getScalableOwnersForPods(
+	ctx context.Context,
+	k8sClient client.Client,
+	pods []corev1.Pod,
+	log logr.Logger,
+) ([]hooks.Resource, error) {
+	seen := make(map[string]struct{})
+	owners := []hooks.Resource{}
+
+	for i := range pods {
+		owner, err := getScalableOwnerFromPod(ctx, k8sClient, &pods[i], log)
+		if err != nil {
+			return nil, err
+		}
+
+		if owner == nil {
+			continue // DaemonSet or unrecognised — skip
+		}
+
+		key := owner.GetObjectMeta().GetNamespace() + "/" +
+			fmt.Sprintf("%T", owner) + "/" +
+			owner.GetObjectMeta().GetName()
+
+		if _, exists := seen[key]; exists {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		owners = append(owners, owner)
+	}
+
+	return owners, nil
+}
+
+// getScalableOwnerFromPod climbs the pod's owner chain and returns a hooks.Resource wrapping
+// the scalable controller (Deployment or StatefulSet).
+// Returns nil (no error) for DaemonSet-owned or bare pods — callers must handle that case.
+func getScalableOwnerFromPod(
+	ctx context.Context,
+	k8sClient client.Client,
+	pod *corev1.Pod,
+	log logr.Logger,
+) (hooks.Resource, error) {
+	for _, ref := range pod.OwnerReferences {
+		if ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+
+		switch ref.Kind {
+		case "ReplicaSet":
+			rs := &appsv1.ReplicaSet{}
+
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: ref.Name, Namespace: pod.Namespace,
+			}, rs); err != nil {
+				return nil, fmt.Errorf("failed to get ReplicaSet %s/%s: %w", pod.Namespace, ref.Name, err)
+			}
+
+			for _, rsRef := range rs.OwnerReferences {
+				if rsRef.Controller == nil || !*rsRef.Controller {
+					continue
+				}
+
+				if rsRef.Kind == "Deployment" {
+					dep := &appsv1.Deployment{}
+
+					if err := k8sClient.Get(ctx, types.NamespacedName{
+						Name: rsRef.Name, Namespace: rs.Namespace,
+					}, dep); err != nil {
+						return nil, fmt.Errorf("failed to get Deployment %s/%s: %w", rs.Namespace, rsRef.Name, err)
+					}
+
+					return hooks.DeploymentResource{Deployment: dep}, nil
+				}
+			}
+
+			log.Info("ReplicaSet has no Deployment owner, skipping pod", "pod", pod.Name, "rs", rs.Name)
+
+			return nil, nil
+
+		case "StatefulSet":
+			ss := &appsv1.StatefulSet{}
+
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: ref.Name, Namespace: pod.Namespace,
+			}, ss); err != nil {
+				return nil, fmt.Errorf("failed to get StatefulSet %s/%s: %w", pod.Namespace, ref.Name, err)
+			}
+
+			return hooks.StatefulSetResource{StatefulSet: ss}, nil
+
+		case "DaemonSet":
+			log.Info("Pod is owned by a DaemonSet — cannot scale down, skipping", "pod", pod.Name, "ds", ref.Name)
+
+			return nil, nil
+
+		default:
+			log.Info("Pod has unrecognised controller kind, skipping", "pod", pod.Name, "kind", ref.Kind)
+
+			return nil, nil
+		}
+	}
+
+	log.Info("Pod has no controller owner, skipping", "pod", pod.Name)
+
+	return nil, nil
+}
+
+// buildDummyHookSpec constructs a minimal HookSpec sufficient to drive ScaleHook methods.
+// ScaleDownResource and ScaleUpResource only use Hook.Name and Hook.Namespace for log messages.
+func buildDummyHookSpec(namespace string) *kubeobjects.HookSpec {
+	return &kubeobjects.HookSpec{
+		Name:      "selinux-subpath-fix",
+		Namespace: namespace,
+	}
 }
 
 func GetPVCfromStorageHandle(

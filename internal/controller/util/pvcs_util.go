@@ -193,6 +193,96 @@ func IsPVCInUseByPod(ctx context.Context,
 	return true, nil
 }
 
+// IsPVCMountedWithSubPath determines if any pod referencing the PVC mounts it using subPath or subPathExpr.
+// This checks both containers and initContainers.
+func IsPVCMountedWithSubPath(
+	ctx context.Context,
+	k8sClient client.Client,
+	log logr.Logger,
+	pvcNamespacedName types.NamespacedName,
+) (bool, error) {
+	pods, err := GetPodsWithSubPathForPVC(ctx, k8sClient, log, pvcNamespacedName)
+	if err != nil {
+		return false, err
+	}
+
+	return len(pods) > 0, nil
+}
+
+// GetPodsWithSubPathForPVC returns all pods that mount the given PVC using subPath or subPathExpr.
+// This checks both containers and initContainers.
+func GetPodsWithSubPathForPVC(
+	ctx context.Context,
+	k8sClient client.Client,
+	log logr.Logger,
+	pvcNamespacedName types.NamespacedName,
+) ([]corev1.Pod, error) {
+	log = log.WithValues("pvc", pvcNamespacedName.String())
+	podUsingPVCList := &corev1.PodList{}
+
+	err := k8sClient.List(ctx,
+		podUsingPVCList,
+		client.MatchingFields{PodVolumePVCClaimIndexName: pvcNamespacedName.Name},
+		client.InNamespace(pvcNamespacedName.Namespace))
+	if err != nil {
+		log.Error(err, "unable to lookup pods to check subPath usage for pvc")
+
+		return nil, fmt.Errorf("unable to lookup pods to check subPath for pvc (%w)", err)
+	}
+
+	var result []corev1.Pod
+
+	for i := range podUsingPVCList.Items {
+		pod := &podUsingPVCList.Items[i]
+		if podMountsPVCWithSubPath(pod, pvcNamespacedName.Name, log) {
+			result = append(result, *pod)
+		}
+	}
+
+	return result, nil
+}
+
+func podMountsPVCWithSubPath(pod *corev1.Pod, pvcName string, log logr.Logger) bool {
+	volNames := make(map[string]struct{})
+
+	for _, vol := range pod.Spec.Volumes {
+		if vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ClaimName == pvcName {
+			volNames[vol.Name] = struct{}{}
+		}
+	}
+
+	if len(volNames) == 0 {
+		return false
+	}
+
+	allContainers := make([]corev1.Container, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
+	allContainers = append(allContainers, pod.Spec.Containers...)
+	allContainers = append(allContainers, pod.Spec.InitContainers...)
+
+	return containersUseSubPath(allContainers, volNames, pod.Name, log)
+}
+
+func containersUseSubPath(
+	containers []corev1.Container,
+	volNames map[string]struct{},
+	podName string,
+	log logr.Logger,
+) bool {
+	for _, c := range containers {
+		for _, vm := range c.VolumeMounts {
+			if _, ok := volNames[vm.Name]; ok && (vm.SubPath != "" || vm.SubPathExpr != "") {
+				log.Info("pvc is mounted with subPath/subPathExpr",
+					"pod", podName, "container", c.Name,
+					"subPath", vm.SubPath, "subPathExpr", vm.SubPathExpr)
+
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // For CSI drivers that support it, volume attachments will be created for the PV to indicate which node
 // they are attached to.  If a volume attachment exists, then we know the PV may not be ready to have a final
 // replication sync performed (I/Os may still not be completely written out).

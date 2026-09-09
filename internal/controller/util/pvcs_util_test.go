@@ -14,6 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/ramendr/ramen/internal/controller/util"
 )
@@ -228,6 +231,197 @@ var _ = Describe("PVCS_Util", func() {
 					HavePVCName(pvcB.GetName()),
 				))
 			})
+		})
+	})
+
+	Describe("IsPVCMountedWithSubPath", func() {
+		var (
+			pvcWithSubPath    *corev1.PersistentVolumeClaim
+			pvcWithoutSubPath *corev1.PersistentVolumeClaim
+		)
+
+		BeforeEach(func() {
+			pvcWithSubPath = createTestPVC(testCtx, testNamespace.GetName(), nil)
+			pvcWithoutSubPath = createTestPVC(testCtx, testNamespace.GetName(), nil)
+		})
+
+		It("returns true when pod container uses subPath", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-with-subpath",
+					Namespace: testNamespace.GetName(),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app",
+							Image: "nginx",
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "vol-subpath",
+									MountPath: "/data",
+									SubPath:   "mysubdir",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "vol-subpath",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: pvcWithSubPath.GetName(),
+								},
+							},
+						},
+					},
+				},
+			}
+			cl := fakeclient.NewClientBuilder().
+				WithIndex(&corev1.Pod{}, util.PodVolumePVCClaimIndexName, func(obj client.Object) []string {
+					pod, ok := obj.(*corev1.Pod)
+					if !ok {
+						return nil
+					}
+
+					var res []string
+
+					for _, vol := range pod.Spec.Volumes {
+						if vol.PersistentVolumeClaim != nil {
+							res = append(res, vol.PersistentVolumeClaim.ClaimName)
+						}
+					}
+
+					return res
+				}).
+				WithObjects(pod).
+				Build()
+
+			mountedWithSubPath, err := util.IsPVCMountedWithSubPath(testCtx, cl, testLogger,
+				types.NamespacedName{Namespace: pvcWithSubPath.Namespace, Name: pvcWithSubPath.Name})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mountedWithSubPath).To(BeTrue())
+		})
+
+		It("returns true when pod initContainer uses subPathExpr", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-with-subpathexpr",
+					Namespace: testNamespace.GetName(),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app",
+							Image: "nginx",
+						},
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:  "init-app",
+							Image: "busybox",
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:        "vol-subpathexpr",
+									MountPath:   "/data",
+									SubPathExpr: "$(POD_NAME)",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "vol-subpathexpr",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: pvcWithSubPath.GetName(),
+								},
+							},
+						},
+					},
+				},
+			}
+			cl := fakeclient.NewClientBuilder().
+				WithIndex(&corev1.Pod{}, util.PodVolumePVCClaimIndexName, func(obj client.Object) []string {
+					pod, ok := obj.(*corev1.Pod)
+					if !ok {
+						return nil
+					}
+
+					var res []string
+
+					for _, vol := range pod.Spec.Volumes {
+						if vol.PersistentVolumeClaim != nil {
+							res = append(res, vol.PersistentVolumeClaim.ClaimName)
+						}
+					}
+
+					return res
+				}).
+				WithObjects(pod).
+				Build()
+
+			mountedWithSubPath, err := util.IsPVCMountedWithSubPath(testCtx, cl, testLogger,
+				types.NamespacedName{Namespace: pvcWithSubPath.Namespace, Name: pvcWithSubPath.Name})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mountedWithSubPath).To(BeTrue())
+		})
+
+		It("returns false when pod mounts pvc directly without subPath", func() {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-without-subpath",
+					Namespace: testNamespace.GetName(),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "app",
+							Image: "nginx",
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "vol-direct",
+									MountPath: "/data",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "vol-direct",
+							VolumeSource: corev1.VolumeSource{
+								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+									ClaimName: pvcWithoutSubPath.GetName(),
+								},
+							},
+						},
+					},
+				},
+			}
+			cl := fakeclient.NewClientBuilder().
+				WithIndex(&corev1.Pod{}, util.PodVolumePVCClaimIndexName, func(obj client.Object) []string {
+					pod, ok := obj.(*corev1.Pod)
+					if !ok {
+						return nil
+					}
+
+					var res []string
+
+					for _, vol := range pod.Spec.Volumes {
+						if vol.PersistentVolumeClaim != nil {
+							res = append(res, vol.PersistentVolumeClaim.ClaimName)
+						}
+					}
+
+					return res
+				}).
+				WithObjects(pod).
+				Build()
+
+			mountedWithSubPath, err := util.IsPVCMountedWithSubPath(testCtx, cl, testLogger,
+				types.NamespacedName{Namespace: pvcWithoutSubPath.Namespace, Name: pvcWithoutSubPath.Name})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mountedWithSubPath).To(BeFalse())
 		})
 	})
 })

@@ -3262,7 +3262,6 @@ func (v *VSHandler) EnsureMountJobForUnmountedPVC(rsSpec *ramendrv1alpha1.VolSyn
 		return true, nil
 	}
 
-	// PVC exists and is not in use, and RS does not exist - create mount job
 	job, err = v.createOrUpdateMountJob(pvcNamespacedName)
 	if err != nil {
 		return false, err
