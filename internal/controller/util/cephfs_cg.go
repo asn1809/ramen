@@ -114,9 +114,29 @@ func GetVolumeGroupSnapshotClassFromPVCsStorageClass(
 		return "", err
 	}
 
+	pvcItems := pvcs.Items
+	// If no PVCs matched by label selector (e.g. during final sync setup where the ConsistencyGroupLabel
+	// was moved to annotations on the source PVCs), check if any PVCs in the namespaces have the annotation.
+	if len(pvcItems) == 0 {
+		for _, ns := range namespace {
+			allPVCs := &corev1.PersistentVolumeClaimList{}
+			if listErr := k8sClient.List(ctx, allPVCs, client.InNamespace(ns)); listErr == nil {
+				for _, pvc := range allPVCs.Items {
+					if pvc.Annotations != nil && pvc.Annotations[ConsistencyGroupLabel] != "" {
+						pvcItems = append(pvcItems, pvc)
+					}
+				}
+			}
+		}
+	}
+
 	storageClassProviders := []string{}
 
-	for _, pvc := range pvcs.Items {
+	for _, pvc := range pvcItems {
+		if pvc.Spec.StorageClassName == nil {
+			continue
+		}
+
 		storageClass := &storagev1.StorageClass{}
 
 		if err := k8sClient.Get(ctx,

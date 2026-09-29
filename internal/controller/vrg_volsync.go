@@ -308,15 +308,19 @@ func (v *VRGInstance) buildProtectedPVCForPVC(
 		return nil, false, true
 	}
 
-	err := util.NewResourceUpdater(&pvc).
-		AddFinalizer(volsync.PVCFinalizerProtected).
-		AddLabel(util.LabelOwnerNamespaceName, v.instance.Namespace).
-		AddLabel(util.LabelOwnerName, v.instance.Name).
-		Update(v.ctx, v.reconciler.Client)
-	if err != nil {
-		v.log.Info(fmt.Sprintf("Unable to add finalizer for PVC. We'll retry later. %v", err))
+	// If PVC is already being deleted, Kubernetes rejects adding new finalizers.
+	// Do not attempt to add finalizer or block reconciliation.
+	if !util.ResourceIsDeleted(&pvc) {
+		err := util.NewResourceUpdater(&pvc).
+			AddFinalizer(volsync.PVCFinalizerProtected).
+			AddLabel(util.LabelOwnerNamespaceName, v.instance.Namespace).
+			AddLabel(util.LabelOwnerName, v.instance.Name).
+			Update(v.ctx, v.reconciler.Client)
+		if err != nil {
+			v.log.Info(fmt.Sprintf("Unable to add finalizer for PVC. We'll retry later. %v", err))
 
-		return nil, true, false // requeue
+			return nil, true, false // requeue
+		}
 	}
 
 	protectedPVC := v.findProtectedPVC(pvc.Namespace, pvc.Name)
