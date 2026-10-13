@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ramen Log Analyzer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:         #0d1117;
+    --surface:    #161b22;
+    --surface2:   #21262d;
+    --border:     #30363d;
+    --text:       #e6edf3;
+    --muted:      #8b949e;
+    --accent:     #58a6ff;
+    --info:       #1f6feb;
+    --warn:       #d29922;
+    --error:      #f85149;
+    --success:    #3fb950;
+    --debug:      #6e7681;
+    --primary-bg: #1c2b3a;
+    --warn-bg:    #2d1f00;
+    --error-bg:   #3d0f0f;
+    --debug-bg:   #1a1f26;
+    --selected:   #1c2b3a;
+    --hover:      #1a2130;
+    --radius:     6px;
+    --font-mono:  'SF Mono','Fira Code','Cascadia Code','Consolas',monospace;
+    --font-ui:    -apple-system,'Segoe UI',system-ui,sans-serif;
+    /* cluster palette — hub is purple, managed clusters cycle through blues/greens */
+    --hub-color:  #a78bfa;
+    --hub-bg:     #1e1535;
+    --c0-color:   #34d399;  /* managed-0 */
+    --c1-color:   #60a5fa;  /* managed-1 */
+    --c2-color:   #f9a8d4;  /* managed-2 */
+    --c3-color:   #fbbf24;  /* managed-3 */
+    --c4-color:   #a3e635;  /* managed-4 */
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Top bar ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .topbar-logo { font-weight: 700; font-size: 14px; letter-spacing: .3px; }
+  .topbar-logo span { color: var(--accent); }
+  .topbar-sep { flex: 1; }
+
+  .stats-banner {
+    display: none;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .stats-banner b { color: var(--text); }
+  .stats-banner .stat-err { color: var(--error); }
+
+  .btn {
+    padding: 5px 11px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--hover); border-color: var(--accent); color: var(--accent); }
+  .btn-primary { background: var(--info); border-color: var(--info); color: #fff; }
+  .btn-primary:hover { background: #388bfd; border-color: #388bfd; color: #fff; }
+  .btn-sm { padding: 2px 8px; font-size: 11px; }
+
+  /* ── Main layout ── */
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Left panel ── */
+  .left-panel {
+    width: 310px;
+    min-width: 200px;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .left-panel-header {
+    padding: 8px 10px 6px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .left-panel-title {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    color: var(--muted);
+    flex: 1;
+  }
+  .count-badge {
+    background: var(--surface2);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .nav-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .nav-tree::-webkit-scrollbar { width: 5px; }
+  .nav-tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Cluster section ── */
+  .cluster-section { border-bottom: 2px solid var(--border); }
+  .cluster-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px 6px;
+    cursor: pointer;
+    user-select: none;
+    background: var(--surface2);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .cluster-header:hover { background: var(--hover); }
+  .cluster-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .cluster-name {
+    font-size: 11.5px;
+    font-weight: 700;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cluster-type-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    border-radius: 3px;
+    padding: 1px 5px;
+    text-transform: uppercase;
+  }
+  .cluster-type-hub { background: var(--hub-bg); color: var(--hub-color); }
+  .cluster-type-managed { background: var(--primary-bg); color: var(--accent); }
+  .cluster-err-badge {
+    font-size: 10px;
+    background: var(--error-bg);
+    color: var(--error);
+    border-radius: 4px;
+    padding: 0 5px;
+  }
+  .chevron {
+    width: 12px; height: 12px;
+    flex-shrink: 0;
+    transition: transform .15s;
+    color: var(--muted);
+  }
+  .chevron svg { width: 10px; height: 10px; }
+  .cluster-header.open .chevron { transform: rotate(90deg); }
+
+  /* ── Object (VRG or DRPC) rows ── */
+  .obj-list { display: none; }
+  .obj-list.open { display: block; }
+
+  .obj-item { border-bottom: 1px solid #1e2530; }
+  .obj-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px 7px 18px;
+    cursor: pointer;
+    user-select: none;
+    transition: background .1s;
+  }
+  .obj-header:hover { background: var(--hover); }
+  .obj-header.active { background: var(--selected); }
+
+  .obj-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .obj-dot.ok  { background: var(--success); }
+  .obj-dot.err { background: var(--error); }
+
+  .obj-name {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .obj-name .ns { color: var(--muted); }
+  .obj-iter-count { font-size: 10px; background: var(--surface2); color: var(--muted); border-radius: 10px; padding: 1px 6px; }
+
+  /* ── Iteration rows ── */
+  .iter-list { display: none; }
+  .iter-list.open { display: block; }
+
+  .iter-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 8px 5px 32px;
+    cursor: pointer;
+    transition: background .1s;
+    border-top: 1px solid #1a1f26;
+  }
+  .iter-row:hover { background: var(--hover); }
+  .iter-row.active { background: var(--selected); border-left: 2px solid var(--accent); padding-left: 30px; }
+
+  .iter-num  { font-family: var(--font-mono); font-size: 11px; color: var(--muted); width: 22px; flex-shrink: 0; }
+  .iter-rid  { font-family: var(--font-mono); font-size: 11px; color: var(--accent); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .iter-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .iter-lines { font-size: 10px; color: var(--muted); white-space: nowrap; }
+  .iter-err-badge { font-size: 10px; background: var(--error-bg); color: var(--error); border-radius: 4px; padding: 0 5px; }
+  .iter-corr-badge {
+    font-size: 9px;
+    border-radius: 3px;
+    padding: 0 4px;
+    font-weight: 600;
+    letter-spacing: .3px;
+  }
+
+  /* ── Right panel ── */
+  .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Viewer header */
+  .viewer-header {
+    padding: 9px 14px 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .breadcrumb {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-family: var(--font-mono);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .bc-cluster { font-size: 11px; font-weight: 700; border-radius: 3px; padding: 1px 6px; }
+  .bc-sep  { color: var(--border); }
+  .bc-obj  { color: var(--text); font-weight: 600; }
+  .bc-iter { color: var(--accent); }
+  .bc-rid  { color: var(--muted); font-weight: 400; }
+
+  .summary-bar {
+    display: flex;
+    gap: 14px;
+    padding: 7px 0;
+    flex-wrap: wrap;
+    font-size: 12px;
+    align-items: center;
+  }
+  .summary-chip { display: flex; gap: 4px; align-items: center; }
+  .summary-chip .label { color: var(--muted); }
+  .summary-chip .val { color: var(--text); font-family: var(--font-mono); }
+  .summary-chip .val.state-primary   { color: var(--success); }
+  .summary-chip .val.state-secondary { color: var(--warn); }
+  .summary-chip .val.err { color: var(--error); }
+
+  /* Correlated panel */
+  .corr-bar {
+    display: none;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    background: #161e2a;
+    gap: 8px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    max-height: 80px;
+    overflow-y: auto;
+  }
+  .corr-bar::-webkit-scrollbar { height: 4px; width: 4px; }
+  .corr-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .corr-bar.visible { display: flex; }
+  .corr-label { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
+  .corr-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    border-radius: 5px;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    transition: border-color .1s, background .1s;
+  }
+  .corr-chip:hover { border-color: var(--accent); background: var(--primary-bg); }
+  .corr-chip .corr-cluster-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .corr-chip .corr-name { font-family: var(--font-mono); color: var(--text); }
+  .corr-chip .corr-iter { color: var(--accent); }
+  .corr-chip .corr-time-delta { color: var(--muted); font-size: 10px; }
+  .corr-chip .corr-err { color: var(--error); font-size: 10px; }
+
+  /* Filter bar */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+    align-items: center;
+  }
+  .search-input {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 10px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .search-input::placeholder { color: var(--debug); }
+  .level-filter { display: flex; gap: 4px; }
+  .level-btn {
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 11px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    font-weight: 600;
+    letter-spacing: .3px;
+  }
+  .level-btn:hover { border-color: var(--text); color: var(--text); }
+  .level-btn.active-INFO  { background: var(--primary-bg); color: var(--accent);   border-color: var(--accent); }
+  .level-btn.active-WARN  { background: var(--warn-bg);    color: var(--warn);     border-color: var(--warn); }
+  .level-btn.active-ERROR { background: var(--error-bg);   color: var(--error);    border-color: var(--error); }
+  .level-btn.active-DEBUG { background: var(--debug-bg);   color: var(--debug);    border-color: var(--debug); }
+  .result-count { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+  /* Log area — scroll container */
+  .log-area {
+    flex: 1;
+    min-height: 0;        /* allow flex child to shrink below content size */
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--bg);
+    position: relative;
+    flex-direction: column;
+  }
+  .log-area::-webkit-scrollbar { width: 6px; }
+  .log-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Virtual scroll spacers */
+  .vs-spacer { pointer-events: none; }
+
+  .log-row {
+    display: grid;
+    grid-template-columns: 165px 52px 1fr;
+    align-items: baseline;
+    padding: 3px 14px;
+    border-bottom: 1px solid #1a1f26;
+    cursor: pointer;
+    gap: 10px;
+  }
+  .log-row:hover { background: var(--surface2); }
+  .log-row.expanded { background: var(--surface); }
+  .log-row.level-ERROR { background: #1f0c0c; }
+  .log-row.level-ERROR:hover { background: #2a1010; }
+  .log-row.level-WARN  { background: #1a1500; }
+  .log-row.level-WARN:hover  { background: #221c00; }
+  .log-row.level-DEBUG { opacity: .6; }
+
+  .log-ts    { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .log-level {
+    font-size: 10px; font-weight: 700; letter-spacing: .4px;
+    border-radius: 3px; padding: 1px 5px; white-space: nowrap; text-align: center;
+  }
+  .log-level.INFO  { background: var(--primary-bg); color: var(--accent); }
+  .log-level.WARN  { background: var(--warn-bg);    color: var(--warn); }
+  .log-level.ERROR { background: var(--error-bg);   color: var(--error); }
+  .log-level.DEBUG { background: var(--debug-bg);   color: var(--debug); }
+
+  .log-body   { display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
+  .log-msg    { color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+  .log-fields { display: none; flex-wrap: wrap; gap: 4px; }
+  .log-row.expanded .log-fields { display: flex; }
+
+  .field-chip {
+    display: inline-flex;
+    gap: 3px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10.5px;
+    white-space: nowrap;
+    max-width: 420px;
+  }
+  .field-key { color: var(--muted); }
+  .field-val { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+  .field-val.is-err { color: var(--error); }
+
+  /* ── Empty / drop zone ── */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    color: var(--muted);
+    padding: 40px;
+  }
+  .drop-zone {
+    width: 520px; max-width: 90vw;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 36px 32px;
+    text-align: center;
+    transition: border-color .15s, background .15s;
+    cursor: pointer;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: var(--primary-bg); }
+  .dz-icon  { font-size: 36px; margin-bottom: 10px; }
+  .dz-title { font-size: 15px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
+  .dz-sub   { font-size: 12px; line-height: 1.7; }
+  .dz-sub code { background: var(--surface2); border-radius: 3px; padding: 1px 5px; font-family: var(--font-mono); font-size: 11px; }
+  .or-sep   { color: var(--border); font-size: 12px; }
+
+  /* viewer empty */
+  .viewer-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* ── File manager panel ── */
+  .file-mgr {
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .file-mgr::-webkit-scrollbar { width: 5px; }
+  .file-mgr::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .file-mgr-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    z-index: 1;
+  }
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border-bottom: 1px solid #1a1f26;
+    font-size: 11.5px;
+  }
+  .file-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .file-name { flex: 1; font-family: var(--font-mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .file-type-sel {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 2px 5px;
+    outline: none;
+    cursor: pointer;
+  }
+  .file-cluster-name-input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11px;
+    padding: 2px 6px;
+    width: 120px;
+    outline: none;
+    font-family: var(--font-mono);
+  }
+  .file-cluster-name-input:focus { border-color: var(--accent); }
+  .file-remove { color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+  .file-remove:hover { color: var(--error); }
+  .file-lines { font-size: 10px; color: var(--muted); white-space: nowrap; }
+
+  /* ── Modals ── */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 720px; max-width: 95vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-header {
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .modal-close { cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }
+  .modal-close:hover { color: var(--text); }
+  .modal textarea {
+    flex: 1;
+    background: var(--bg);
+    border: none; outline: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 12px 16px;
+    resize: none;
+    min-height: 280px;
+  }
+  .modal-body { padding: 16px; overflow-y: auto; }
+  .modal-footer {
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    align-items: center;
+  }
+  .modal-footer-left { flex: 1; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+
+  /* Paste modal cluster type selector */
+  .paste-meta {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .paste-meta select, .paste-meta input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 3px 8px;
+    outline: none;
+    font-family: var(--font-mono);
+  }
+  .paste-meta input { width: 140px; }
+
+  /* Resizer */
+  .resizer {
+    width: 4px; cursor: col-resize;
+    background: var(--border); flex-shrink: 0;
+    transition: background .1s;
+  }
+  .resizer:hover, .resizer.dragging { background: var(--accent); }
+
+  #file-input { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="topbar-logo">Ramen <span>Log Analyzer</span></div>
+
+  <div class="stats-banner" id="stats-banner">
+    <span><b id="stat-clusters">0</b> clusters</span>
+    <span><b id="stat-objs">0</b> objects</span>
+    <span><b id="stat-iters">0</b> iterations</span>
+    <span><b id="stat-lines">0</b> lines</span>
+    <span class="stat-err"><b id="stat-errors">0</b> errors</span>
+  </div>
+
+  <div class="topbar-sep"></div>
+  <button class="btn" id="btn-paste">Paste Logs</button>
+  <button class="btn" id="btn-load-dir">📁 Load gather dir</button>
+  <button class="btn btn-primary" id="btn-load">📂 Add File</button>
+  <input type="file" id="file-input" accept=".log,.txt,.json,text/*" multiple>
+  <input type="file" id="dir-input" webkitdirectory multiple style="display:none">
+</div>
+
+<!-- Main -->
+<div class="main" id="main-area">
+
+  <!-- Empty state / drop zone -->
+  <div class="empty-state" id="empty-state">
+    <div class="drop-zone" id="drop-zone">
+      <div class="dz-icon">📂</div>
+      <div class="dz-title">Drop log files or a gather directory here</div>
+      <div class="dz-sub">
+        Drop individual <code>.log</code> files <em>or</em> drag your entire <code>gather.rdr/</code> directory.<br>
+        Cluster names are auto-detected from directory paths (<code>hub/</code>, <code>dr1/</code>, <code>dr2/</code>).<br><br>
+        Or use <strong>📁 Load gather dir</strong> to browse to a <code>gather.rdr/</code> folder.
+      </div>
+    </div>
+    <div class="or-sep">— or —</div>
+    <button class="btn" id="btn-paste2">Paste log text</button>
+  </div>
+
+  <!-- Two-panel layout -->
+  <div id="app-layout" style="display:none;flex:1;flex-direction:row;overflow:hidden;">
+
+    <!-- Left panel -->
+    <div class="left-panel" id="left-panel">
+      <div class="left-panel-header">
+        <span class="left-panel-title">Objects</span>
+        <span class="count-badge" id="obj-count-badge">0</span>
+      </div>
+      <div class="nav-tree" id="nav-tree"></div>
+
+      <!-- File manager (bottom of left panel) -->
+      <div class="file-mgr" id="file-mgr">
+        <div class="file-mgr-header">
+          Loaded files
+          <button class="btn btn-sm" id="btn-add-more" style="margin-left:4px">+ Add</button>
+        </div>
+        <div id="file-list"></div>
+      </div>
+    </div>
+
+    <div class="resizer" id="resizer"></div>
+
+    <!-- Right panel -->
+    <div class="right-panel" id="right-panel">
+      <!-- Viewer header: breadcrumb + summary -->
+      <div id="viewer-header" class="viewer-header" style="display:none">
+        <div class="breadcrumb" id="breadcrumb"></div>
+        <div class="summary-bar" id="summary-bar"></div>
+      </div>
+
+      <!-- Correlated iterations bar -->
+      <div class="corr-bar" id="corr-bar">
+        <span class="corr-label">Linked</span>
+        <span id="corr-chips"></span>
+      </div>
+
+      <!-- Filter bar -->
+      <div id="filter-bar" class="filter-bar" style="display:none">
+        <input class="search-input" id="search-input" placeholder="Filter log lines…" autocomplete="off" spellcheck="false">
+        <div class="level-filter">
+          <button class="level-btn active-INFO"  data-level="INFO">INFO</button>
+          <button class="level-btn active-WARN"  data-level="WARN">WARN</button>
+          <button class="level-btn active-ERROR" data-level="ERROR">ERROR</button>
+          <button class="level-btn active-DEBUG" data-level="DEBUG">DEBUG</button>
+        </div>
+        <span class="result-count" id="result-count"></span>
+      </div>
+
+      <!-- Log area (virtual scrolled) -->
+      <div id="log-area" class="log-area" style="display:none"></div>
+
+      <div id="viewer-empty" class="viewer-empty">← Select an object and iteration</div>
+    </div>
+  </div>
+</div>
+
+<!-- Paste modal -->
+<div class="modal-overlay" id="paste-modal">
+  <div class="modal">
+    <div class="modal-header">
+      Paste Log Text
+      <span class="modal-close" id="modal-close">✕</span>
+    </div>
+    <div class="paste-meta">
+      <span>Cluster type:</span>
+      <select id="paste-type">
+        <option value="auto">Auto-detect</option>
+        <option value="hub">Hub</option>
+        <option value="managed">Managed</option>
+      </select>
+      <span>Cluster name:</span>
+      <input id="paste-cluster-name" placeholder="e.g. hub / cluster-1" value="">
+    </div>
+    <textarea id="paste-area" placeholder="Paste ramen controller-manager log output here…"></textarea>
+    <div class="modal-footer">
+      <button class="btn" id="modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="modal-parse">Parse Logs</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ════════════════════════════════════════════════════════════
+// CONSTANTS
+// ════════════════════════════════════════════════════════════
+
+// Controllers that run on hub vs managed
+const HUB_CONTROLLERS     = new Set(['drpc','drp','drc','drcc-hub']);
+const MANAGED_CONTROLLERS = new Set(['vrg','pvrgl','rgd','rgs','drcc']);
+
+// Primary identifier field per controller
+const CTRL_KEY = { drpc:'drpc', drp:'drp', drc:'drc', vrg:'vrg', pvrgl:'pvrgl', rgd:'rgd', rgs:'rgs' };
+
+// Cluster color palette
+const CLUSTER_COLORS = ['#a78bfa','#34d399','#60a5fa','#f9a8d4','#fbbf24','#a3e635','#fb923c','#e879f9'];
+
+// Virtual scroll config
+const VS_ROW_H_DEFAULT = 28; // px per log row — initial estimate, replaced by measurement
+const VS_BUFFER = 30;        // extra rows to render above/below viewport
+
+// Correlation time window (ms): VRG iteration must start within this window
+// after the DRPC iteration to be considered correlated
+const CORR_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+// ════════════════════════════════════════════════════════════
+// PARSER  (zap dev text + zap prod JSON)
+// ════════════════════════════════════════════════════════════
+
+// Supports zap dev-mode variants:
+//   Plain:          2024-01-31T14:27:12.726-0500  INFO  vrg  Message  {fields}
+//   With src file:  2026-09-07T05:10:58.110Z  INFO  vrg  controller/vrg.go:462  Message  {fields}
+//   Must-gather:    2025-11-11T19:30:19.538690907Z  2025-11-11T19:30:19.538Z  INFO  vrg  ...
+//     (container runtime prepends its own nanosecond timestamp before the actual log line)
+// Matches the container-runtime prefix ONLY when two timestamps appear at the start:
+//   "2025-11-11T19:30:19.538690907Z 2025-11-11T19:30:19.538Z\t..."
+//    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ strip only this first one
+// A single timestamp at the start is the real zap timestamp — do NOT strip it.
+const RUNTIME_TS_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(?=\d{4}-\d{2}-\d{2}T)/;
+const LINE_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+(?:[+-]\d{4}|Z))\s+(INFO|WARN|WARNING|ERROR|DEBUG|FATAL|DPANIC|PANIC)\s+(\S+)\s+(?:\S+\.go:\d+\s+)?(.+?)(?:\s+(\{.*\}))?\s*$/;
+
+function parseLine(raw) {
+  raw = raw.trim();
+  if (!raw) return null;
+
+  // Strip leading container-runtime timestamp injected by must-gather / kubectl logs
+  // e.g. "2025-11-11T19:30:19.538690907Z 2025-11-11T19:30:19.538Z  INFO  vrg ..."
+  //       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ strip this prefix
+  raw = raw.replace(RUNTIME_TS_RE, '');
+
+  // zap prod JSON
+  if (raw.startsWith('{"level"')) {
+    try {
+      const obj = JSON.parse(raw);
+      const level = normalizeLevel(obj.level || 'INFO');
+      const ts    = obj.ts ? (typeof obj.ts === 'number' ? new Date(obj.ts*1000).toISOString() : String(obj.ts)) : '';
+      const msg   = obj.msg || '';
+      const ctrl  = obj.logger || '';
+      const fields = {};
+      for (const [k,v] of Object.entries(obj)) {
+        if (!['level','ts','caller','logger','msg','stacktrace'].includes(k)) fields[k] = v;
+      }
+      return { raw, ts, level, ctrl, msg, fields };
+    } catch { /* fall through */ }
+  }
+
+  // zap dev text
+  const m = LINE_RE.exec(raw);
+  if (!m) return { raw, ts:'', level:'DEBUG', ctrl:'', msg:raw, fields:{} };
+
+  const [, ts, lvRaw, ctrl, msgRaw, jsonPart] = m;
+  const level = normalizeLevel(lvRaw);
+  let msg = msgRaw.trim();
+  let fields = {};
+
+  if (jsonPart) {
+    fields = parseFieldsPreferFirst(jsonPart);
+    msg = msg.replace(/\s*\{.*\}\s*$/, '').trim();
+  }
+
+  return { raw, ts, level, ctrl: ctrl || '', msg, fields };
+}
+
+// Parse a zap fields JSON blob.
+// Some log lines have duplicate top-level "vrg" keys:
+//   {"vrg": {"name":"x","namespace":"y"}, ..., "vrg": "x"}
+// JSON.parse gives last-wins ("x"), but we want the richer object form.
+// Strategy: parse normally, then if "vrg" ended up as a plain string, look for
+// the earlier object form in the raw string and restore it.
+function parseFieldsPreferFirst(s) {
+  let obj;
+  try { obj = JSON.parse(s); } catch { return {}; }
+
+  // If "vrg" is now a plain string but the raw text has "vrg": { before it,
+  // extract the object and use it instead (first-occurrence wins for identity fields).
+  if (typeof obj['vrg'] === 'string') {
+    const m = s.match(/"vrg"\s*:\s*(\{(?:[^{}]|\{[^{}]*\})*\})/);
+    if (m) {
+      try {
+        const vrgObj = JSON.parse(m[1]);
+        if (vrgObj && vrgObj.name) obj['vrg'] = vrgObj;
+      } catch { /* ok — keep string form */ }
+    }
+  }
+  return obj;
+}
+
+function normalizeLevel(l) {
+  return (l || 'DEBUG').toUpperCase().replace('WARNING','WARN').replace('FATAL','ERROR').replace('DPANIC','ERROR').replace('PANIC','ERROR');
+}
+
+function parseAll(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    const p = parseLine(line);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+// Detect whether a parsed log belongs to hub or managed
+// Returns 'hub' | 'managed' | 'unknown'
+function detectClusterType(parsedLines) {
+  const counts = { hub: 0, managed: 0 };
+  for (const l of parsedLines.slice(0, 500)) {
+    const c = (l.ctrl || '').toLowerCase();
+    if (HUB_CONTROLLERS.has(c))     counts.hub++;
+    if (MANAGED_CONTROLLERS.has(c)) counts.managed++;
+    // also check fields
+    if (l.fields['drpc'] !== undefined) counts.hub++;
+    if (l.fields['vrg']  !== undefined) counts.managed++;
+  }
+  if (counts.hub > counts.managed) return 'hub';
+  if (counts.managed > counts.hub) return 'managed';
+  if (counts.hub > 0) return 'hub';
+  if (counts.managed > 0) return 'managed';
+  return 'unknown';
+}
+
+// ════════════════════════════════════════════════════════════
+// GROUPING
+// ════════════════════════════════════════════════════════════
+
+// Normalise a field value that may be either:
+//   - a plain string:  "openshift-dr-ops/s-mdr-dis-vm1-drpc"
+//   - an object:       {"name":"s-mdr-dis-vm1-drpc","namespace":"openshift-dr-ops"}
+// Returns "namespace/name" string in both cases.
+function normalizeObjField(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'object' && v.name) {
+    return v.namespace ? `${v.namespace}/${v.name}` : v.name;
+  }
+  const s = String(v);
+  // Reject obviously-wrong values that crept in from other fields
+  // (BSL names, error strings, etc. — they contain '--' sequences or are very long)
+  if (s === '[object Object]') return null;
+  if (s.length > 253) return null;           // k8s name limit for namespace/name
+  if (s.includes('--')) return null;         // BSL / velero resource names contain '--'
+  return s;
+}
+
+// Determine the primary object key from a parsed log line
+// Returns {key, type} where type is the controller name
+function extractObjKey(line) {
+  const f = line.fields;
+  const c = (line.ctrl || '').toLowerCase();
+
+  // Check dedicated fields first, normalising object-valued fields
+  for (const [ctrl, fkey] of Object.entries(CTRL_KEY)) {
+    if (f[fkey] !== undefined) {
+      const key = normalizeObjField(f[fkey]);
+      if (key) return { key, type: ctrl };
+    }
+  }
+
+  // Fall back to controller name + any name/namespace fields
+  const name = f['name'] ? normalizeObjField(f['name']) : null;
+  if (name) return { key: name, type: c || 'unknown' };
+
+  return { key: '(unknown)', type: c || 'unknown' };
+}
+
+// Group parsed lines into objects → iterations
+// Returns array of objGroups: { key, type, ns, name, iterationList, errorCount }
+function groupLines(parsedLines) {
+  const objMap = new Map(); // key -> objGroup
+
+  // First pass: bucket every line by (objKey, rid)
+  for (const entry of parsedLines) {
+    const { key, type } = extractObjKey(entry);
+    const rid = String(entry.fields['rid'] || '(no rid)');
+
+    if (!objMap.has(key)) {
+      const slash = key.lastIndexOf('/');
+      objMap.set(key, {
+        key,
+        type,
+        ns:   slash > -1 ? key.slice(0, slash) : '',
+        name: slash > -1 ? key.slice(slash+1)  : key,
+        iterations: new Map(),
+        errorCount: 0,
+      });
+    }
+    const obj = objMap.get(key);
+
+    if (!obj.iterations.has(rid)) {
+      obj.iterations.set(rid, { rid, lines:[], errorCount:0, state:'' });
+    }
+    const iter = obj.iterations.get(rid);
+    iter.lines.push(entry);
+
+    if (entry.level === 'ERROR') { iter.errorCount++; obj.errorCount++; }
+    if (entry.fields['State'] && !iter.state) iter.state = String(entry.fields['State']);
+  }
+
+  // Second pass: absorb "(unknown)" lines into real VRG iterations by rid.
+  // Lines with no VRG identity (e.g. util/owner.go enqueue helpers) share a rid
+  // with the VRG reconcile loop they belong to — move them there.
+  const unknownObj = objMap.get('(unknown)');
+  if (unknownObj) {
+    // Build a rid → real obj map from all non-unknown objects
+    const ridToObj = new Map();
+    for (const [k, obj] of objMap) {
+      if (k === '(unknown)') continue;
+      for (const [rid] of obj.iterations) ridToObj.set(rid, obj);
+    }
+    // Re-bucket unknown lines
+    let absorbed = 0;
+    for (const [rid, iter] of unknownObj.iterations) {
+      const target = ridToObj.get(rid);
+      if (target) {
+        const targetIter = target.iterations.get(rid);
+        if (targetIter) {
+          for (const line of iter.lines) {
+            targetIter.lines.push(line);
+            if (line.level === 'ERROR') { targetIter.errorCount++; target.errorCount++; }
+          }
+          absorbed += iter.lines.length;
+          // Re-sort by timestamp so absorbed lines appear in chronological order
+          if (targetIter.lines.length > 1 && targetIter.lines[0].ts) {
+            targetIter.lines.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+          }
+        }
+      }
+    }
+    // Remove (unknown) entirely — absorbed or not worth showing
+    objMap.delete('(unknown)');
+  }
+
+  const objs = [];
+  for (const [, obj] of objMap) {
+    const iterList = [];
+    let idx = 1;
+    for (const [, iter] of obj.iterations) {
+      iter.index   = idx++;
+      iter.startTs = iter.lines[0]?.ts || '';
+      iter.endTs   = iter.lines[iter.lines.length-1]?.ts || '';
+      iter.startMs = iter.startTs ? safeDate(iter.startTs) : 0;
+      iter.endMs   = iter.endTs   ? safeDate(iter.endTs)   : 0;
+      iter.duration = (iter.startMs && iter.endMs && iter.endMs >= iter.startMs)
+        ? fmtDur(iter.endMs - iter.startMs) : '';
+      iterList.push(iter);
+    }
+    obj.iterationList = iterList;
+    objs.push(obj);
+  }
+
+  // Sort: errors-first, then alpha
+  objs.sort((a, b) => {
+    if (a.errorCount > 0 && b.errorCount === 0) return -1;
+    if (b.errorCount > 0 && a.errorCount === 0) return 1;
+    return a.key.localeCompare(b.key);
+  });
+
+  return objs;
+}
+
+function safeDate(ts) {
+  try { const d = new Date(ts); return isNaN(d) ? 0 : d.getTime(); } catch { return 0; }
+}
+function fmtDur(ms) {
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms/1000).toFixed(1) + 's';
+  return Math.floor(ms/60000) + 'm ' + Math.floor((ms%60000)/1000) + 's';
+}
+function fmtTs(ts) {
+  if (!ts) return '';
+  // normalise to UTC for cross-cluster comparison, show HH:MM:SS.mmm
+  try {
+    const d = new Date(ts);
+    if (isNaN(d)) return ts;
+    return d.toISOString().replace('T',' ').replace('Z','').slice(0,23);
+  } catch { return ts; }
+}
+
+// ════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════
+
+// clusters: Array<{ id, label, type:'hub'|'managed'|'unknown', color, objs, fileName }>
+let clusters      = [];
+let clusterSeq    = 0;
+let corrIndex     = new Map(); // "ns/name" -> Array<{clusterId, iter}>
+
+let selectedCluster  = null;
+let selectedObj      = null;
+let selectedIter     = null;
+
+let expandedClusters = new Set();
+let expandedObjs     = new Set();  // set of "clusterId::objKey"
+
+let activeFilters = new Set(['INFO','WARN','ERROR','DEBUG']);
+let searchText    = '';
+
+// Virtual scroll state
+let vsLines       = [];   // current filtered lines array
+let vsScrollY     = 0;
+
+// ════════════════════════════════════════════════════════════
+// CLUSTER COLOR ASSIGNMENT
+// ════════════════════════════════════════════════════════════
+
+function clusterColor(idx) { return CLUSTER_COLORS[idx % CLUSTER_COLORS.length]; }
+
+// ════════════════════════════════════════════════════════════
+// CORRELATION INDEX
+// Build after every file load:
+//   For every object key (ns/name) collect all {clusterId, iter} pairs
+// ════════════════════════════════════════════════════════════
+
+function rebuildCorrIndex() {
+  corrIndex = new Map();
+  for (const cl of clusters) {
+    for (const obj of cl.objs) {
+      const key = obj.key; // "ns/name"
+      if (!corrIndex.has(key)) corrIndex.set(key, []);
+      for (const iter of obj.iterationList) {
+        corrIndex.get(key).push({ clusterId: cl.id, clusterLabel: cl.label, clusterColor: cl.color, clusterType: cl.type, obj, iter });
+      }
+    }
+  }
+}
+
+// Find correlated iterations for a given (clusterId, objKey, iter):
+// - Same object key in other clusters
+// - Timeline: other iter starts within CORR_WINDOW_MS after/before this iter
+function findCorrelated(clusterId, objKey, iter) {
+  const entries = corrIndex.get(objKey) || [];
+  const refStart = iter.startMs || 0;
+  const refEnd   = iter.endMs   || 0;
+
+  return entries.filter(e => {
+    // Only correlate across clusters — same-cluster iterations of the same object
+    // are just that object's own reconcile history, not correlated events.
+    if (e.clusterId === clusterId) return false;
+    if (!e.iter.startMs) return true; // no timestamp — include across clusters
+    const delta = e.iter.startMs - refStart;
+    return Math.abs(delta) <= CORR_WINDOW_MS;
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// LOAD FILE
+// ════════════════════════════════════════════════════════════
+
+let loadedFiles = []; // { id, fileName, type, label, lineCount }
+let fileSeq = 0;
+
+function addLogSource(text, fileName, typeHint, labelHint) {
+  const parsed = parseAll(text);
+  if (!parsed.length) return;
+
+  const detectedType = typeHint === 'auto' || !typeHint ? detectClusterType(parsed) : typeHint;
+  const isHub   = detectedType === 'hub';
+  const idx     = clusters.length;
+  const color   = clusterColor(idx);
+
+  // Determine label
+  let label = labelHint && labelHint.trim() ? labelHint.trim()
+    : isHub ? 'hub' : `ramen-log-${clusters.filter(c=>c.type==='managed').length + 1}`;
+
+  const id = ++clusterSeq;
+
+  const objs = groupLines(parsed);
+
+  clusters.push({ id, label, type: detectedType, color, objs, fileName });
+  loadedFiles.push({ id, fileName, type: detectedType, label, lineCount: parsed.length });
+
+  expandedClusters.add(id);
+
+  rebuildCorrIndex();
+  updateStats();
+  renderAll();
+}
+
+function removeCluster(id) {
+  clusters = clusters.filter(c => c.id !== id);
+  loadedFiles = loadedFiles.filter(f => f.id !== id);
+  if (selectedCluster && selectedCluster.id === id) {
+    selectedCluster = null; selectedObj = null; selectedIter = null;
+  }
+  expandedClusters.delete(id);
+  rebuildCorrIndex();
+  updateStats();
+  renderAll();
+  if (!clusters.length) showEmptyState();
+}
+
+// ════════════════════════════════════════════════════════════
+// STATS
+// ════════════════════════════════════════════════════════════
+
+function updateStats() {
+  let totalObjs=0, totalIters=0, totalLines=0, totalErrors=0;
+  for (const cl of clusters) {
+    totalObjs += cl.objs.length;
+    for (const obj of cl.objs) {
+      totalIters  += obj.iterationList.length;
+      totalErrors += obj.errorCount;
+      for (const iter of obj.iterationList) totalLines += iter.lines.length;
+    }
+  }
+  document.getElementById('stat-clusters').textContent = clusters.length;
+  document.getElementById('stat-objs').textContent     = totalObjs;
+  document.getElementById('stat-iters').textContent    = totalIters;
+  document.getElementById('stat-lines').textContent    = totalLines;
+  document.getElementById('stat-errors').textContent   = totalErrors;
+  document.getElementById('stats-banner').style.display = 'flex';
+}
+
+// ════════════════════════════════════════════════════════════
+// RENDER — LEFT PANEL NAV TREE
+// ════════════════════════════════════════════════════════════
+
+function renderAll() {
+  showAppLayout();
+  renderNavTree();
+  renderFileList();
+  if (selectedIter) renderViewer();
+}
+
+function renderNavTree() {
+  const tree = document.getElementById('nav-tree');
+  let totalObjs = 0;
+  for (const cl of clusters) totalObjs += cl.objs.length;
+  document.getElementById('obj-count-badge').textContent = totalObjs;
+
+  tree.innerHTML = '';
+
+  if (!clusters.length) {
+    tree.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:12px;text-align:center">No logs loaded</div>';
+    return;
+  }
+
+  for (const cl of clusters) {
+    const sec = document.createElement('div');
+    sec.className = 'cluster-section';
+
+    const isOpen  = expandedClusters.has(cl.id);
+    const clErr   = cl.objs.reduce((s,o)=>s+o.errorCount,0);
+    const typeBadgeClass = cl.type === 'hub' ? 'cluster-type-hub' : 'cluster-type-managed';
+    const typeLabel      = cl.type === 'hub' ? 'HUB' : 'MANAGED';
+
+    sec.innerHTML = `
+      <div class="cluster-header ${isOpen?'open':''}" data-cid="${cl.id}">
+        <span class="chevron"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3,2 7,5 3,8"/></svg></span>
+        <span class="cluster-dot" style="background:${cl.color}"></span>
+        <span class="cluster-name" style="color:${cl.color}">${esc(cl.label)}</span>
+        <span class="cluster-type-badge ${typeBadgeClass}">${typeLabel}</span>
+        ${clErr>0 ? `<span class="cluster-err-badge">${clErr} err</span>` : ''}
+      </div>
+      <div class="obj-list ${isOpen?'open':''}" data-cid-list="${cl.id}">
+        ${cl.objs.map(obj => renderObjItem(cl, obj)).join('')}
+      </div>
+    `;
+    tree.appendChild(sec);
+  }
+
+  // Event delegation
+  tree.querySelectorAll('.cluster-header').forEach(el => {
+    el.addEventListener('click', () => {
+      const cid = Number(el.dataset.cid);
+      if (expandedClusters.has(cid)) expandedClusters.delete(cid);
+      else expandedClusters.add(cid);
+      renderNavTree();
+    });
+  });
+  tree.querySelectorAll('.obj-header').forEach(el => {
+    el.addEventListener('click', () => {
+      const cid    = Number(el.dataset.cid);
+      const objKey = el.dataset.objkey;
+      const ekey   = cid + '::' + objKey;
+      if (expandedObjs.has(ekey)) expandedObjs.delete(ekey);
+      else expandedObjs.add(ekey);
+      renderNavTree();
+    });
+  });
+  tree.querySelectorAll('.iter-row').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      const cid    = Number(el.dataset.cid);
+      const objKey = el.dataset.objkey;
+      const rid    = el.dataset.rid;
+      const cl     = clusters.find(c=>c.id===cid);
+      const obj    = cl?.objs.find(o=>o.key===objKey);
+      const iter   = obj?.iterationList.find(i=>i.rid===rid);
+      if (cl && obj && iter) selectIteration(cl, obj, iter);
+    });
+  });
+}
+
+function renderObjItem(cl, obj) {
+  const ekey  = cl.id + '::' + obj.key;
+  const isOpen   = expandedObjs.has(ekey);
+  const isActive = selectedObj && selectedObj.key === obj.key && selectedCluster?.id === cl.id;
+
+  const nsHtml   = obj.ns ? `<span class="ns">${esc(obj.ns)}/</span>` : '';
+  const nameHtml = esc(obj.name);
+
+  return `
+    <div class="obj-item">
+      <div class="obj-header ${isOpen?'open':''} ${isActive?'active':''}" data-cid="${cl.id}" data-objkey="${esc(obj.key)}">
+        <span class="chevron"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3,2 7,5 3,8"/></svg></span>
+        <span class="obj-dot ${obj.errorCount>0?'err':'ok'}"></span>
+        <span class="obj-name">${nsHtml}${nameHtml}</span>
+        <span class="obj-iter-count">${obj.iterationList.length}</span>
+      </div>
+      <div class="iter-list ${isOpen?'open':''}" data-cid-iters="${cl.id}">
+        ${obj.iterationList.map(iter => renderIterRow(cl, obj, iter)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderIterRow(cl, obj, iter) {
+  const isActive = selectedIter?.rid === iter.rid && selectedObj?.key === obj.key && selectedCluster?.id === cl.id;
+  const errBadge = iter.errorCount > 0 ? `<span class="iter-err-badge">${iter.errorCount}</span>` : '';
+  const durLabel = iter.duration ? `<span class="iter-lines">${iter.duration}</span>` : '';
+
+  // Correlation badge: does this iteration have linked events in other clusters?
+  const correlated = findCorrelated(cl.id, obj.key, iter);
+  const corrBadge = correlated.length > 0
+    ? `<span class="iter-corr-badge" style="background:${correlated[0].clusterColor}22;color:${correlated[0].clusterColor};border:1px solid ${correlated[0].clusterColor}44">↔ ${correlated.length}</span>`
+    : '';
+
+  return `
+    <div class="iter-row ${isActive?'active':''}" data-cid="${cl.id}" data-objkey="${esc(obj.key)}" data-rid="${esc(iter.rid)}">
+      <span class="iter-num">#${iter.index}</span>
+      <span class="iter-rid">${esc(iter.rid)}</span>
+      <span class="iter-meta">
+        <span class="iter-lines">${iter.lines.length} lines</span>
+        ${durLabel}
+        ${errBadge}
+        ${corrBadge}
+      </span>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════
+// RENDER — FILE LIST (bottom of left panel)
+// ════════════════════════════════════════════════════════════
+
+function renderFileList() {
+  const list = document.getElementById('file-list');
+  list.innerHTML = '';
+  for (const f of loadedFiles) {
+    const cl = clusters.find(c=>c.id===f.id);
+    if (!cl) continue;
+    const row = document.createElement('div');
+    row.className = 'file-row';
+    row.innerHTML = `
+      <span class="file-dot" style="background:${cl.color}"></span>
+      <span class="file-name" title="${esc(f.fileName)}">${esc(f.fileName)}</span>
+      <input class="file-cluster-name-input" data-fid="${f.id}" value="${esc(cl.label)}" title="Cluster label">
+      <select class="file-type-sel" data-fid="${f.id}">
+        <option value="hub"     ${cl.type==='hub'?'selected':''}>Hub</option>
+        <option value="managed" ${cl.type==='managed'?'selected':''}>Managed</option>
+        <option value="unknown" ${cl.type==='unknown'?'selected':''}>Unknown</option>
+      </select>
+      <span class="file-lines">${f.lineCount}</span>
+      <span class="file-remove" data-fid="${f.id}" title="Remove">✕</span>
+    `;
+    list.appendChild(row);
+  }
+
+  list.querySelectorAll('.file-remove').forEach(el => {
+    el.addEventListener('click', () => removeCluster(Number(el.dataset.fid)));
+  });
+  list.querySelectorAll('.file-type-sel').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const fid = Number(sel.dataset.fid);
+      const cl = clusters.find(c=>c.id===fid);
+      if (cl) { cl.type = sel.value; rebuildCorrIndex(); renderNavTree(); }
+    });
+  });
+  list.querySelectorAll('.file-cluster-name-input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const fid = Number(inp.dataset.fid);
+      const cl = clusters.find(c=>c.id===fid);
+      const lf = loadedFiles.find(f=>f.id===fid);
+      if (cl) { cl.label = inp.value.trim() || cl.label; if(lf) lf.label = cl.label; rebuildCorrIndex(); renderNavTree(); }
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// RENDER — RIGHT PANEL VIEWER
+// ════════════════════════════════════════════════════════════
+
+function selectIteration(cl, obj, iter) {
+  selectedCluster = cl;
+  selectedObj     = obj;
+  selectedIter    = iter;
+  expandedClusters.add(cl.id);
+  expandedObjs.add(cl.id + '::' + obj.key);
+  renderNavTree();
+  renderViewer();
+}
+
+function renderViewer() {
+  if (!selectedCluster || !selectedObj || !selectedIter) return;
+
+  document.getElementById('viewer-empty').style.display = 'none';
+  document.getElementById('viewer-header').style.display = 'block';
+  document.getElementById('filter-bar').style.display   = 'flex';
+  document.getElementById('log-area').style.display     = 'flex';
+
+  // Breadcrumb
+  const cl   = selectedCluster;
+  const obj  = selectedObj;
+  const iter = selectedIter;
+  const typeLabel = cl.type === 'hub' ? 'HUB' : 'MANAGED';
+  const typeBadgeClass = cl.type === 'hub' ? 'cluster-type-hub' : 'cluster-type-managed';
+  document.getElementById('breadcrumb').innerHTML =
+    `<span class="bc-cluster cluster-type-badge ${typeBadgeClass}" style="color:${cl.color};background:${cl.color}1a">${esc(cl.label)}</span>` +
+    `<span class="bc-sep">›</span>` +
+    `<span class="bc-obj">${esc(obj.key)}</span>` +
+    `<span class="bc-sep">›</span>` +
+    `<span class="bc-iter">Iteration #${iter.index}</span>` +
+    `<span class="bc-rid">(${esc(iter.rid)})</span>`;
+
+  // Summary bar
+  const stateNorm = (iter.state || '').toLowerCase();
+  const stateClass = stateNorm === 'primary' ? 'state-primary' : stateNorm === 'secondary' ? 'state-secondary' : '';
+  const stateChip = iter.state
+    ? `<span class="summary-chip"><span class="label">State</span><span class="val ${stateClass}">${esc(iter.state)}</span></span>`
+    : '';
+  const errChip = iter.errorCount > 0
+    ? `<span class="summary-chip"><span class="label">Errors</span><span class="val err">${iter.errorCount}</span></span>`
+    : '';
+  document.getElementById('summary-bar').innerHTML = `
+    ${stateChip}
+    <span class="summary-chip"><span class="label">Lines</span><span class="val">${iter.lines.length}</span></span>
+    ${iter.startTs ? `<span class="summary-chip"><span class="label">Start (UTC)</span><span class="val">${esc(fmtTs(iter.startTs))}</span></span>` : ''}
+    ${iter.endTs   ? `<span class="summary-chip"><span class="label">End (UTC)</span><span class="val">${esc(fmtTs(iter.endTs))}</span></span>`   : ''}
+    ${iter.duration ? `<span class="summary-chip"><span class="label">Duration</span><span class="val">${esc(iter.duration)}</span></span>` : ''}
+    ${errChip}
+  `;
+
+  // Correlated iterations
+  renderCorrBar();
+
+  // Log lines (virtual scroll)
+  rebuildVsLines();
+  renderLogArea();
+}
+
+function renderCorrBar() {
+  const corrBar   = document.getElementById('corr-bar');
+  const corrChips = document.getElementById('corr-chips');
+
+  const correlated = findCorrelated(selectedCluster.id, selectedObj.key, selectedIter);
+  if (!correlated.length) {
+    corrBar.classList.remove('visible');
+    return;
+  }
+  corrBar.classList.add('visible');
+
+  corrChips.innerHTML = correlated.map(e => {
+    const timeDelta = (e.iter.startMs && selectedIter.startMs)
+      ? timeDeltaStr(e.iter.startMs - selectedIter.startMs) : '';
+    const errLabel  = e.iter.errorCount > 0 ? `<span class="corr-err">${e.iter.errorCount} err</span>` : '';
+    const typeLabel = e.clusterType === 'hub' ? 'HUB' : 'MGD';
+    return `
+      <span class="corr-chip"
+            data-cid="${e.clusterId}" data-objkey="${esc(e.obj.key)}" data-rid="${esc(e.iter.rid)}">
+        <span class="corr-cluster-dot" style="background:${e.clusterColor}"></span>
+        <span class="corr-name" style="color:${e.clusterColor}">${esc(e.clusterLabel)}</span>
+        <span class="corr-iter">#${e.iter.index}</span>
+        ${timeDelta ? `<span class="corr-time-delta">${timeDelta}</span>` : ''}
+        ${errLabel}
+      </span>
+    `;
+  }).join('');
+
+  corrChips.querySelectorAll('.corr-chip').forEach(el => {
+    el.addEventListener('click', () => {
+      const cid    = Number(el.dataset.cid);
+      const objKey = el.dataset.objkey;
+      const rid    = el.dataset.rid;
+      const cl  = clusters.find(c=>c.id===cid);
+      const obj = cl?.objs.find(o=>o.key===objKey);
+      const it  = obj?.iterationList.find(i=>i.rid===rid);
+      if (cl && obj && it) selectIteration(cl, obj, it);
+    });
+  });
+}
+
+function timeDeltaStr(deltaMs) {
+  const sign = deltaMs < 0 ? '-' : '+';
+  const abs  = Math.abs(deltaMs);
+  if (abs < 1000)  return sign + abs + 'ms';
+  if (abs < 60000) return sign + (abs/1000).toFixed(1) + 's';
+  return sign + Math.floor(abs/60000) + 'm';
+}
+
+// ════════════════════════════════════════════════════════════
+// VIRTUAL SCROLL
+// ════════════════════════════════════════════════════════════
+
+function rebuildVsLines() {
+  if (!selectedIter) { vsLines = []; return; }
+  const q = searchText.toLowerCase();
+  vsLines = selectedIter.lines.filter(l => {
+    if (!activeFilters.has(l.level)) return false;
+    if (q) {
+      const hay = (l.msg + ' ' + JSON.stringify(l.fields)).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  document.getElementById('result-count').textContent =
+    vsLines.length === selectedIter.lines.length
+      ? `${vsLines.length} lines`
+      : `${vsLines.length} / ${selectedIter.lines.length} lines`;
+}
+
+function renderLogArea() {
+  const area = document.getElementById('log-area');
+  area.innerHTML = '';
+
+  if (!vsLines.length) {
+    area.innerHTML = '<div style="padding:22px;color:var(--muted);text-align:center;font-size:12px">No matching log lines</div>';
+    return;
+  }
+
+  if (vsLines.length <= 1500) {
+    // Small enough — render all rows natively; browser handles scrolling correctly
+    const frag = document.createDocumentFragment();
+    for (const line of vsLines) frag.appendChild(makeLogRow(line));
+    area.appendChild(frag);
+    return;
+  }
+
+  // Virtual scroll for very large sets (>1500 lines)
+  // Use measured row height after first render to avoid jump-scroll artifacts
+  let vsRowH = VS_ROW_H_DEFAULT;
+
+  const topSpacer = document.createElement('div');
+  topSpacer.className = 'vs-spacer';
+  topSpacer.id = 'vs-top';
+  const botSpacer = document.createElement('div');
+  botSpacer.className = 'vs-spacer';
+  botSpacer.id = 'vs-bot';
+  const rowContainer = document.createElement('div');
+  rowContainer.id = 'vs-rows';
+
+  area.appendChild(topSpacer);
+  area.appendChild(rowContainer);
+  area.appendChild(botSpacer);
+
+  function doVsRender() {
+    const scrollTop = area.scrollTop;
+    const viewH     = area.clientHeight;
+    const startIdx  = Math.max(0, Math.floor(scrollTop / vsRowH) - VS_BUFFER);
+    const endIdx    = Math.min(vsLines.length, Math.ceil((scrollTop + viewH) / vsRowH) + VS_BUFFER);
+
+    topSpacer.style.height = (startIdx * vsRowH) + 'px';
+    botSpacer.style.height = ((vsLines.length - endIdx) * vsRowH) + 'px';
+
+    const prevStart = Number(rowContainer.dataset.start || -1);
+    const prevEnd   = Number(rowContainer.dataset.end   || -1);
+    if (prevStart === startIdx && prevEnd === endIdx) return;
+    rowContainer.dataset.start = startIdx;
+    rowContainer.dataset.end   = endIdx;
+
+    const frag = document.createDocumentFragment();
+    for (let i = startIdx; i < endIdx; i++) frag.appendChild(makeLogRow(vsLines[i]));
+    rowContainer.innerHTML = '';
+    rowContainer.appendChild(frag);
+
+    // After first render, measure actual average row height and recalculate spacers
+    if (rowContainer.children.length > 0 && vsRowH === VS_ROW_H_DEFAULT) {
+      const measured = rowContainer.scrollHeight / rowContainer.children.length;
+      if (measured > 1) {
+        vsRowH = measured;
+        topSpacer.style.height = (startIdx * vsRowH) + 'px';
+        botSpacer.style.height = ((vsLines.length - endIdx) * vsRowH) + 'px';
+      }
+    }
+  }
+
+  area._vsRender = doVsRender;
+  area.addEventListener('scroll', doVsRender, { passive: true });
+  doVsRender();
+}
+
+function makeLogRow(line) {
+  const q      = searchText.toLowerCase();
+  const row    = document.createElement('div');
+  row.className = `log-row level-${line.level}`;
+
+  const fieldEntries = Object.entries(line.fields || {})
+    .filter(([k]) => !['vrg','drpc','rid','caller','logger'].includes(k));
+
+  const chips = fieldEntries.map(([k, v]) => {
+    const vStr  = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    const isErr = k === 'error' || k === 'err';
+    return `<span class="field-chip"><span class="field-key">${esc(k)}</span><span class="field-val${isErr?' is-err':''}">${esc(vStr.length > 100 ? vStr.slice(0,100)+'…' : vStr)}</span></span>`;
+  }).join('');
+
+  row.innerHTML = `
+    <span class="log-ts">${esc(fmtTs(line.ts))}</span>
+    <span class="log-level ${line.level}">${line.level}</span>
+    <span class="log-body">
+      <span class="log-msg">${escHL(line.msg, q)}</span>
+      ${chips ? `<span class="log-fields">${chips}</span>` : ''}
+    </span>
+  `;
+
+  if (chips) row.addEventListener('click', () => row.classList.toggle('expanded'));
+  return row;
+}
+
+// ════════════════════════════════════════════════════════════
+// FILTERS
+// ════════════════════════════════════════════════════════════
+
+document.querySelectorAll('.level-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const lv = btn.dataset.level;
+    if (activeFilters.has(lv)) { activeFilters.delete(lv); btn.className = 'level-btn'; }
+    else { activeFilters.add(lv); btn.className = `level-btn active-${lv}`; }
+    rebuildVsLines();
+    renderLogArea();
+  });
+});
+
+document.getElementById('search-input').addEventListener('input', e => {
+  searchText = e.target.value;
+  rebuildVsLines();
+  renderLogArea();
+});
+
+// ════════════════════════════════════════════════════════════
+// FILE LOADING
+// ════════════════════════════════════════════════════════════
+
+function readFileAsText(file, cb) {
+  const r = new FileReader();
+  r.onload = ev => cb(ev.target.result);
+  r.readAsText(file);
+}
+
+// Derive a cluster label from a File object.
+// Handles two directory layouts:
+//
+//   gather.rdr (drenv):
+//     gather.rdr/hub/pods/...        → "hub"
+//     gather.rdr/dr1/pods/...        → "dr1"
+//
+//   ODF must-gather:
+//     .../namespaces/openshift-dr-system/pods/ramen-hub-operator-.../...        → "hub"
+//     .../namespaces/openshift-dr-system/pods/ramen-dr-cluster-operator-.../... → derived from filename/path
+//
+// Falls back to the filename stripped of extension.
+function labelFromFile(file) {
+  const fullPath = file.webkitRelativePath || file.name;
+
+  // gather.rdr: first path segment after the root that matches known cluster names
+  const gatherM = fullPath.match(/(?:^|\/)((hub|dr\d+|c\d+|cluster[-_]\w+))(?:\/|$)/i);
+  if (gatherM) return gatherM[1].toLowerCase();
+
+  // must-gather: derive from pod name
+  //   ramen-hub-operator-...        → "hub"
+  //   ramen-dr-cluster-operator-... → "ramen-log" (current) or "ramen-log-prev" (previous)
+  if (/ramen-hub-operator/i.test(fullPath)) return 'hub';
+  if (/ramen-dr-cluster-operator/i.test(fullPath)) {
+    const prev = /previous\.log$/i.test(fullPath);
+    return prev ? 'ramen-log-prev' : 'ramen-log';
+  }
+
+  // Fall back: strip extension from filename
+  return file.name.replace(/\.[^.]+$/, '');
+}
+
+function handleFiles(files) {
+  for (const file of files) {
+    const label = labelFromFile(file);
+    readFileAsText(file, text => addLogSource(text, file.name, 'auto', label));
+  }
+}
+
+document.getElementById('btn-load').addEventListener('click', () => document.getElementById('file-input').click());
+document.getElementById('btn-add-more').addEventListener('click', () => document.getElementById('file-input').click());
+document.getElementById('btn-load-dir').addEventListener('click', () => document.getElementById('dir-input').click());
+
+document.getElementById('file-input').addEventListener('change', e => {
+  handleFiles(Array.from(e.target.files));
+  e.target.value = '';
+});
+
+// Directory picker — filter to ramen controller-manager log files only
+document.getElementById('dir-input').addEventListener('change', e => {
+  const all = Array.from(e.target.files);
+  // Keep only files that look like ramen operator logs
+  const filtered = all.filter(f => isRamenLogFile(f));
+  if (!filtered.length) {
+    alert('No ramen controller-manager log files found in the selected directory.\nExpected files matching: ramen-*-operator*.log');
+    e.target.value = '';
+    return;
+  }
+  handleFiles(filtered);
+  e.target.value = '';
+});
+
+// Drag and drop — support both individual files and directories
+const body     = document.body;
+const dropZone = document.getElementById('drop-zone');
+body.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+body.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+body.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  // Collect files from DataTransferItemList to handle directory drops in Chrome
+  const files = [];
+  if (e.dataTransfer.items) {
+    for (const item of e.dataTransfer.items) {
+      if (item.kind === 'file') files.push(item.getAsFile());
+    }
+  } else {
+    files.push(...e.dataTransfer.files);
+  }
+  // If it looks like a directory drop (many files), filter to ramen logs only
+  const ramenFiles = files.filter(f => f && isRamenLogFile(f));
+  handleFiles(ramenFiles.length ? ramenFiles : files.filter(Boolean));
+});
+dropZone.addEventListener('click', () => document.getElementById('file-input').click());
+
+// Returns true if a File looks like a ramen operator log.
+// Handles both drenv gather.rdr paths and ODF must-gather paths:
+//
+//   gather.rdr layout:
+//     hub/pods/ramen-system/ramen-hub-operator-.../logs/manager.log
+//     dr1/pods/ramen-system/ramen-dr-cluster-operator-.../logs/manager.log
+//
+//   ODF must-gather layout:
+//     namespaces/openshift-dr-system/pods/ramen-dr-cluster-operator-.../manager/manager/logs/current.log
+//     namespaces/openshift-dr-system/pods/ramen-hub-operator-.../manager/manager/logs/current.log
+//
+// The fallback "accept any .log" is intentionally removed — it caused every ceph/ODF
+// debug log to be loaded when a full must-gather directory was selected.
+// Users who want to load an arbitrary .log file should use "Add File" instead.
+function isRamenLogFile(file) {
+  const path = (file.webkitRelativePath || file.name).toLowerCase();
+
+  // Must be a .log file — reject YAML, oc_output, and all other resource dumps
+  if (!path.endsWith('.log')) return false;
+
+  // Exclude known non-ramen sidecar containers
+  if (path.includes('/kube-rbac-proxy/')) return false;
+  if (path.includes('/chown-container')) return false;
+
+  // Must-gather: ramen logs live under pods/ramen-*-operator.../logs/ inside openshift-dr-system
+  // Require both the namespace AND the pods/logs path structure to avoid YAML dumps
+  if (path.includes('/openshift-dr-system/') && path.includes('/pods/') && path.includes('/logs/')) return true;
+
+  // gather.rdr / direct kubectl log: pod name contains ramen operator name
+  if (/ramen-(hub|dr-cluster)-operator/.test(path)) return true;
+
+  // drenv gather style: file named controller-manager*.log or ramen*.log
+  const filename = path.split('/').pop();
+  if (/^(controller[-_]manager|ramen).*\.log$/.test(filename)) return true;
+
+  return false;
+}
+
+// ════════════════════════════════════════════════════════════
+// PASTE MODAL
+// ════════════════════════════════════════════════════════════
+
+function openPaste()  { document.getElementById('paste-modal').classList.add('open'); document.getElementById('paste-area').focus(); }
+function closePaste() { document.getElementById('paste-modal').classList.remove('open'); document.getElementById('paste-area').value = ''; }
+
+document.getElementById('btn-paste').addEventListener('click',  openPaste);
+document.getElementById('btn-paste2').addEventListener('click', openPaste);
+document.getElementById('modal-close').addEventListener('click',  closePaste);
+document.getElementById('modal-cancel').addEventListener('click', closePaste);
+document.getElementById('paste-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closePaste(); });
+
+document.getElementById('modal-parse').addEventListener('click', () => {
+  const text  = document.getElementById('paste-area').value.trim();
+  const type  = document.getElementById('paste-type').value;
+  const label = document.getElementById('paste-cluster-name').value.trim();
+  if (!text) return;
+  closePaste();
+  addLogSource(text, 'pasted', type, label || (type === 'hub' ? 'hub' : ''));
+});
+
+// ════════════════════════════════════════════════════════════
+// PANEL RESIZER
+// ════════════════════════════════════════════════════════════
+
+const resizer   = document.getElementById('resizer');
+const leftPanel = document.getElementById('left-panel');
+let isResizing  = false, startX = 0, startW = 0;
+
+resizer.addEventListener('mousedown', e => {
+  isResizing = true; startX = e.clientX; startW = leftPanel.offsetWidth;
+  resizer.classList.add('dragging');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+});
+document.addEventListener('mousemove', e => {
+  if (!isResizing) return;
+  leftPanel.style.width = Math.max(180, Math.min(600, startW + e.clientX - startX)) + 'px';
+});
+document.addEventListener('mouseup', () => {
+  if (!isResizing) return;
+  isResizing = false;
+  resizer.classList.remove('dragging');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+});
+
+// ════════════════════════════════════════════════════════════
+// LAYOUT HELPERS
+// ════════════════════════════════════════════════════════════
+
+function showEmptyState() {
+  document.getElementById('empty-state').style.display  = 'flex';
+  document.getElementById('app-layout').style.display   = 'none';
+  document.getElementById('stats-banner').style.display = 'none';
+}
+
+function showAppLayout() {
+  document.getElementById('empty-state').style.display = 'none';
+  const layout = document.getElementById('app-layout');
+  layout.style.display = 'flex';
+}
+
+// ════════════════════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════════════════════
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escHL(s, q) {
+  const safe = esc(s);
+  if (!q) return safe;
+  try {
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
+    return safe.replace(re, m => `<mark style="background:var(--warn);color:#000;border-radius:2px">${m}</mark>`);
+  } catch { return safe; }
+}
+</script>
+</body>
+</html>
